@@ -451,7 +451,8 @@ func TestAcceptancePersistenceFailureStopsBeforeStreamCommit(t *testing.T) {
 
 func TestOversizedBodyRejected(t *testing.T) {
 	server, _ := fixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("oversized body reached upstream") }), "codex", 1)
-	r := httptest.NewRequest("POST", "http://localhost/responses", strings.NewReader(strings.Repeat(" ", maxBody+1)))
+	r := httptest.NewRequest("POST", "http://localhost/responses", strings.NewReader(`{}`))
+	r.ContentLength = maxBody + 1
 	r.Header.Set("Authorization", "Bearer local-secret")
 	w := httptest.NewRecorder()
 	server.ServeHTTP(w, r)

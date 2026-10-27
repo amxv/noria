@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -23,7 +24,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const maxBody = 16 << 20
+// Bounded allowance for image-heavy conversation history in native clients.
+const maxBody = 256 << 20
 const maxPrelude = 256 << 10
 const maxAttempts = 16
 
@@ -174,11 +176,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusMethodNotAllowed, "POST required")
 		return
 	}
+	if r.ContentLength > maxBody {
+		fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds %d MiB", maxBody>>20))
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			fail(w, http.StatusRequestEntityTooLarge, "request body exceeds 16 MiB")
+			fail(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds %d MiB", maxBody>>20))
 		} else {
 			fail(w, http.StatusBadRequest, "cannot read request")
 		}
