@@ -5,6 +5,11 @@ order: 11
 category: Reference
 ---
 
+## 0.4.2 · October 28, 2026
+
+- Increased the bounded HTTP and WebSocket native request body limit from 16 MiB to 256 MiB to support image-heavy conversation history in Codex and Claude sessions.
+- Added early rejection for requests whose declared `Content-Length` exceeds the cap, and updated HTTP 413 responses to report the configured 256 MiB limit.
+
 ## 0.4.1 · October 23, 2026
 
 - Windows and Linux installers now enable tray startup at login and launch the tray immediately in graphical sessions. Headless Linux installations remain usable without a desktop.
