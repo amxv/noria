@@ -2,179 +2,119 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ['v*']
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.26.4"
-  CLI_BINARY: "noria"
-  CLI_ENTRYPOINT: "noria"
-  CLI_MODULE: "github.com/amxv/noria"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
 
 permissions:
   contents: read
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Linux static toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.4.0"
+          bun-version: '1.4.0'
       - name: Validate version and source
         run: |
           python3 scripts/release.py check "$GITHUB_REF_NAME"
-          go mod verify
-          go test -race ./...
-          go vet ./...
-          make lint
-          test -z "$(gofmt -l cmd internal)"
+          make check
+          make test-go-parity
       - name: Check and build documentation
         run: |
           make docs-install
           make docs-check
           make docs-build
 
-  build-binaries:
+  build-native:
     needs: quality
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        goos: [darwin, linux, windows]
-        goarch: [amd64, arm64]
+        include:
+          - { runner: ubuntu-22.04, os: linux, arch: amd64, python: x64, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: arm64, python: arm64, target: aarch64-unknown-linux-musl }
+          - { runner: macos-15-intel, os: darwin, arch: amd64, python: x64, target: x86_64-apple-darwin }
+          - { runner: macos-15, os: darwin, arch: arm64, python: arm64, target: aarch64-apple-darwin }
+          - { runner: windows-2022, os: windows, arch: amd64, python: x64, target: x86_64-pc-windows-msvc }
+          - { runner: windows-11-arm, os: windows, arch: arm64, python: arm64, target: aarch64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Linux static toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: Build binary
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python }}
+      - name: Native tests
+        run: cargo test --locked --all-targets --features desktop --target ${{ matrix.target }}
+      - name: Build matching CLI and native desktop archive
+        run: python3 scripts/build-release.py --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+      - name: Background service smoke with isolated profiles
+        timeout-minutes: 3
+        shell: bash
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+          NORIA_TEST_SKIP_LOGIN: '1'
         run: |
-          mkdir -p dist
-          EXT=""
-          if [ "$GOOS" = windows ]; then EXT=".exe"; fi
-          VERSION="${GITHUB_REF_NAME#v}"
-          go build -mod=readonly -trimpath \
-            -ldflags="-s -w -X ${{ env.CLI_MODULE }}/internal/buildinfo.Version=$VERSION" \
-            -o "dist/${{ env.CLI_BINARY }}_${GOOS}_${GOARCH}${EXT}" ./cmd/${{ env.CLI_ENTRYPOINT }}
+          set -euo pipefail
+          suffix=''
+          if [ '${{ matrix.os }}' = windows ]; then suffix=.exe; fi
+          export NORIA_TEST_SERVICE_BIN="$PWD/dist/noria_${{ matrix.os }}_${{ matrix.arch }}$suffix"
+          python3 scripts/test-service-smoke.py
       - uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: native-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
-  build-menubar:
-    needs: quality
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        arch: [arm64, amd64]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: Build signed native app and matching CLI
-        shell: bash
-        env:
-          NORIA_VERSION: ${{ github.ref_name }}
-          ARCH: ${{ matrix.arch }}
-        run: |
-          export NORIA_VERSION="${NORIA_VERSION#v}"
-          mkdir -p stage dist
-          swift_arch="$ARCH"
-          if [ "$ARCH" = amd64 ]; then swift_arch=x86_64; fi
-          ./apps/menubar/build.sh "$PWD/stage/Noria.app" "$swift_arch"
-          CGO_ENABLED=0 GOOS=darwin GOARCH="$ARCH" go build -mod=readonly -trimpath \
-            -ldflags="-s -w -X ${{ env.CLI_MODULE }}/internal/buildinfo.Version=$NORIA_VERSION" \
-            -o stage/noria ./cmd/noria
-          codesign --verify --deep --strict stage/Noria.app
-          if [ "$(uname -m)" = "$swift_arch" ]; then
-            stage/noria --version
-            stage/Noria.app/Contents/MacOS/noria-menubar --check
-            stage/Noria.app/Contents/MacOS/noria-menubar --validate-status-json apps/menubar/Tests/status.json
-            stage/Noria.app/Contents/MacOS/noria-menubar --validate-compact-status-json apps/menubar/Tests/compact-status.json
-          fi
-          cp LICENSE THIRD_PARTY_NOTICES.md stage/
-          COPYFILE_DISABLE=1 tar -czf "dist/noria_darwin_${ARCH}.tar.gz" -C stage noria Noria.app LICENSE THIRD_PARTY_NOTICES.md
-      - uses: actions/upload-artifact@v4
-        with:
-          name: menubar-${{ matrix.arch }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  build-tray:
-    needs: quality
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux, windows]
-        goarch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: Build matching CLI and Go tray bundle
-        shell: bash
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
-        run: |
-          set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p stage dist
-          ext=""
-          gui_flags=""
-          if [ "$GOOS" = windows ]; then ext=.exe; gui_flags=' -H windowsgui'; fi
-          go build -mod=readonly -trimpath \
-            -ldflags="-s -w -X ${{ env.CLI_MODULE }}/internal/buildinfo.Version=$VERSION" \
-            -o "stage/noria$ext" ./cmd/noria
-          go build -mod=readonly -trimpath \
-            -ldflags="-s -w -X main.version=$VERSION$gui_flags" \
-            -o "stage/noria-tray$ext" ./cmd/noria-tray
-          cp LICENSE THIRD_PARTY_NOTICES.md stage/
-          tar -czf "dist/noria_${GOOS}_${GOARCH}.tar.gz" -C stage "noria$ext" "noria-tray$ext" LICENSE THIRD_PARTY_NOTICES.md
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tray-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
   github-release:
-    needs: [build-binaries, build-menubar, build-tray]
-    runs-on: ubuntu-latest
+    needs: build-native
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Verify six binaries, two macOS apps and four tray bundles; generate checksums
+      - name: Verify all six binaries and six desktop archives; generate checksums
         run: |
-          test "$(find dist -maxdepth 1 -type f -name 'noria_*' ! -name '*.tar.gz' | wc -l)" -eq 6
-          test "$(find dist -maxdepth 1 -type f -name 'noria_darwin_*.tar.gz' | wc -l)" -eq 2
-          test "$(find dist -maxdepth 1 -type f -name 'noria_linux_*.tar.gz' | wc -l)" -eq 2
-          test "$(find dist -maxdepth 1 -type f -name 'noria_windows_*.tar.gz' | wc -l)" -eq 2
-          (cd dist && sha256sum noria_* > SHA256SUMS)
+          python3 scripts/release.py checksums dist
+          python3 scripts/release.py verify dist
           cp LICENSE THIRD_PARTY_NOTICES.md dist/
           python3 scripts/release.py notes "$GITHUB_REF_NAME" > release-notes.md
       - name: Publish GitHub release
@@ -187,22 +127,32 @@ jobs:
 
   install-smoke:
     needs: github-release
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { runner: ubuntu-22.04, os: linux, arch: amd64 }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: arm64 }
+          - { runner: macos-15-intel, os: darwin, arch: amd64 }
+          - { runner: macos-15, os: darwin, arch: arm64 }
+          - { runner: windows-2022, os: windows, arch: amd64 }
+          - { runner: windows-11-arm, os: windows, arch: arm64 }
     steps:
       - uses: actions/checkout@v4
-      - name: Verify native install on macOS and Linux
+      - name: Verify native macOS and Linux install with isolated profiles
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          export NORIA_VERSION="${GITHUB_REF_NAME#v}"
+          export HOME="$RUNNER_TEMP/noria-user"
           export NORIA_HOME="$RUNNER_TEMP/noria-smoke"
+          export CODEX_HOME="$HOME/codex" CLAUDE_CONFIG_DIR="$HOME/claude"
+          export XDG_CONFIG_HOME="$HOME/config" XDG_CACHE_HOME="$HOME/cache"
+          export NORIA_VERSION="${GITHUB_REF_NAME#v}"
           export NORIA_INSTALL_DIR="$RUNNER_TEMP/noria-install"
           export NORIA_NO_LAUNCH=1
+          mkdir -p "$HOME"
           sh scripts/install.sh
           "$NORIA_INSTALL_DIR/noria" --version | grep -Fx "noria $NORIA_VERSION"
           "$NORIA_INSTALL_DIR/noria" --help
@@ -217,14 +167,21 @@ jobs:
             "$NORIA_INSTALL_DIR/noria-tray" --check
             "$NORIA_INSTALL_DIR/noria" tray --help
           fi
-      - name: Verify native Windows install
+      - name: Verify native Windows install with isolated profiles
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:NORIA_VERSION = $env:GITHUB_REF_NAME.Substring(1)
+          $env:HOME = Join-Path $env:RUNNER_TEMP 'noria-user'
+          $env:USERPROFILE = $env:HOME
+          $env:APPDATA = Join-Path $env:HOME 'appdata'
+          $env:LOCALAPPDATA = Join-Path $env:HOME 'localappdata'
+          $env:CODEX_HOME = Join-Path $env:HOME 'codex'
+          $env:CLAUDE_CONFIG_DIR = Join-Path $env:HOME 'claude'
           $env:NORIA_HOME = Join-Path $env:RUNNER_TEMP 'noria-smoke'
           $env:NORIA_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'noria-install'
           $env:NORIA_NO_LAUNCH = '1'
+          New-Item -ItemType Directory -Force $env:HOME | Out-Null
           & ./scripts/install.ps1
           $exe = Join-Path $env:NORIA_INSTALL_DIR 'noria.exe'
           $tray = Join-Path $env:NORIA_INSTALL_DIR 'noria-tray.exe'
@@ -235,9 +192,6 @@ jobs:
           & $exe --help
           & $exe status --json | ConvertFrom-Json | Out-Null
           & $exe upgrade --check --json | ConvertFrom-Json | Out-Null
-          # A running Windows executable cannot safely replace itself.
-          # Exercise the detached new-binary helper against a private copy;
-          # this must never modify an actual user installation.
           $pending = Join-Path $env:NORIA_INSTALL_DIR '.noria-upgrade-test.exe'
           $trayPending = Join-Path $env:NORIA_INSTALL_DIR '.noria-tray-upgrade-test.exe'
           Copy-Item $exe $pending
