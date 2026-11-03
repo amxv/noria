@@ -82,11 +82,10 @@ fn user_home() -> Result<PathBuf> {
         .context("user home is unavailable")
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
-    let path = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
+    // Windows drive-relative paths (C:profiles) need the native drive's current
+    // directory; joining the process cwd leaves them relative. This resolves
+    // them without requiring the settings file or directory to exist.
+    let path = std::path::absolute(path)?;
     let mut normalized = PathBuf::new();
     for part in path.components() {
         match part {

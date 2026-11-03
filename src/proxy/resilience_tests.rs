@@ -164,7 +164,15 @@ async fn cancellation_before_headers_closes_upstream_and_releases_reservation() 
             }
         }
         started_tx.send(()).unwrap();
-        assert_eq!(socket.read(&mut scratch).await.unwrap(), 0);
+        match socket.read(&mut scratch).await {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            result => panic!("upstream stayed connected after cancellation: {result:?}"),
+        }
         let _ = closed_tx.send(());
     });
     let home = tempfile::tempdir().unwrap();

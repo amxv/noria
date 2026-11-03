@@ -54,11 +54,9 @@ pub fn home() -> Result<PathBuf> {
         )
         .join(".noria"),
     };
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()?.join(path)
-    };
+    // Windows drive-relative paths (C:profiles) need the platform's absolute
+    // path resolution; joining them to cwd can silently retain a relative path.
+    let absolute = std::path::absolute(path)?;
     // Match filepath.Abs's lexical cleaning without resolving symlinks or
     // requiring an initialized home directory to exist.
     let mut clean = PathBuf::new();

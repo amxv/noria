@@ -36,6 +36,14 @@ def run(*args, env=None):
     subprocess.run(args, cwd=ROOT, env=env, check=True)
 
 
+def verify_static_linux_binary(path: Path):
+    """Catch toolchain wrappers that silently turn static PIE into dynamic ELF."""
+    headers = subprocess.check_output(["readelf", "--program-headers", "--wide", str(path)], text=True)
+    dynamic = subprocess.check_output(["readelf", "--dynamic", "--wide", str(path)], text=True)
+    if any(line.split()[:1] == ["INTERP"] for line in headers.splitlines()) or "(NEEDED)" in dynamic:
+        raise ValueError(f"Linux release binary has a dynamic loader or shared library dependency: {path}")
+
+
 def build(output: Path, expected_os=None, expected_arch=None):
     system, arch = native_target()
     if (expected_os and expected_os != system) or (expected_arch and expected_arch != arch):
@@ -51,6 +59,9 @@ def build(output: Path, expected_os=None, expected_arch=None):
     binaries = Path(metadata["target_directory"]) / target / "release"
     suffix = ".exe" if system == "windows" else ""
     binary = binaries / ("noria" + suffix)
+    if system == "linux":
+        verify_static_linux_binary(binary)
+        verify_static_linux_binary(binaries / "noria-tray")
     actual = subprocess.check_output([str(binary), "--version"], text=True).strip()
     if actual != f"noria {version}":
         raise ValueError(f"Embedded CLI version mismatch: {actual!r}")

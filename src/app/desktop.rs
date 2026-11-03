@@ -374,6 +374,8 @@ fn desktop_quote(value: &str) -> String {
     )
 }
 async fn tray_login(home: &Path, exe: &Path, enabled: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let _ = home;
     ensure!(
         !cfg!(target_os = "macos"),
         "the native tray app is available on Windows and Linux"
