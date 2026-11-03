@@ -63,6 +63,7 @@ jobs:
       - name: Build and validate native release artifacts
         run: python3 scripts/build-release.py --os ${{ matrix.os }} --arch ${{ matrix.arch }}
       - name: Background service smoke with isolated profiles
+        timeout-minutes: 3
         shell: bash
         env:
           NORIA_TEST_SKIP_LOGIN: '1'

@@ -10,7 +10,7 @@ default-run = "noria"
 
 [features]
 default = []
-desktop = ["dep:tray-icon", "dep:windows-sys", "dep:zbus"]
+desktop = ["dep:tray-icon", "dep:zbus"]
 
 [dependencies]
 anyhow = "1"
@@ -46,7 +46,7 @@ uuid = { version = "1", features = ["v4"] }
 tray-icon = { version = "0.26", default-features = false, features = ["ksni"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"], optional = true }
