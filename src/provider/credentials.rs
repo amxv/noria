@@ -164,13 +164,12 @@ pub(super) async fn native_credential_data(a: &Account, p: &Path) -> Result<Nati
                     process::bounded_output(cmd, 1 << 20),
                 )
                 .await
+                    && !data.is_empty()
                 {
-                    if !data.is_empty() {
-                        return Ok(NativeCredential {
-                            data,
-                            keychain: Some((service, user)),
-                        });
-                    }
+                    return Ok(NativeCredential {
+                        data,
+                        keychain: Some((service, user)),
+                    });
                 }
             }
         }
