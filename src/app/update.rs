@@ -209,7 +209,7 @@ async fn install(
             return Err(error);
         }
         let _ = app_source;
-        return Ok(true);
+        Ok(true)
     }
     #[cfg(not(windows))]
     {
@@ -339,18 +339,15 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
     fn app_copy_rejects_symlinks() {
-        #[cfg(unix)]
-        {
-            let t = tempfile::tempdir().unwrap();
-            let source = t.path().join("source");
-            fs::create_dir(&source).unwrap();
-            std::os::unix::fs::symlink("/tmp", source.join("link")).unwrap();
-            assert!(copy_tree(&source, &t.path().join("target")).is_err());
-        }
+        let t = tempfile::tempdir().unwrap();
+        let source = t.path().join("source");
+        fs::create_dir(&source).unwrap();
+        std::os::unix::fs::symlink("/tmp", source.join("link")).unwrap();
+        assert!(copy_tree(&source, &t.path().join("target")).is_err());
     }
 }

@@ -14,6 +14,25 @@ fn exe() -> &'static Path {
     Path::new("/safe/noria")
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_drive_relative_roots_produce_stable_absolute_metadata() {
+    for root in [r"C:fixture\codex", r"C:fixture\old\..\codex"] {
+        let path = target_path("codex", Path::new(root)).unwrap();
+        assert!(
+            path.is_absolute(),
+            "settings path remains drive-relative: {}",
+            path.display()
+        );
+        assert!(path.ends_with(r"fixture\codex\config.toml"));
+        assert!(
+            !path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir))
+        );
+    }
+}
+
 #[test]
 fn codex_round_trip_keeps_comments_native_login_and_unrelated_edits() {
     let original = "# my settings\nmodel_provider = \"openai\" # preferred\nmodel = \"fixture-model\"\n[features]\nsome_feature = true\n";

@@ -1,10 +1,12 @@
-# Release binaries stay self-contained on Linux and Windows. The Linux musl
-# compiler is a native build prerequisite (CI installs musl-tools).
+# Release binaries stay self-contained on Linux and Windows. Rust supplies musl
+# startup objects and libc; the native linker supports its static-PIE flags.
+# Older musl-gcc wrappers drop those flags (rust-lang/rust#95926). musl-tools
+# remains required for C dependency compilation, but must not link Rust binaries.
 [target.x86_64-unknown-linux-musl]
-linker = "musl-gcc"
+linker = "cc"
 
 [target.aarch64-unknown-linux-musl]
-linker = "musl-gcc"
+linker = "cc"
 
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]

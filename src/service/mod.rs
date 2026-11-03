@@ -232,6 +232,11 @@ pub async fn supervise(home: &Path) -> Result<()> {
 fn watch_intent(
     home: &Path,
 ) -> Result<(notify::RecommendedWatcher, tokio::sync::mpsc::Receiver<()>)> {
+    // FSEvents reports canonical paths (for example /private/var rather than
+    // /var on macOS). Match and watch the same resolved directory on every OS.
+    let home = home
+        .canonicalize()
+        .context("resolve supervisor watch directory")?;
     let (wake, changes) = tokio::sync::mpsc::channel(1);
     let intent = home.join("service.json");
     let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
@@ -249,7 +254,7 @@ fn watch_intent(
             let _ = wake.try_send(());
         }
     })?;
-    watcher.watch(home, notify::RecursiveMode::NonRecursive)?;
+    watcher.watch(&home, notify::RecursiveMode::NonRecursive)?;
     Ok((watcher, changes))
 }
 
