@@ -14,27 +14,45 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
+  native:
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { runner: ubuntu-22.04, os: linux, arch: amd64, python: x64, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: arm64, python: arm64, target: aarch64-unknown-linux-musl }
+          - { runner: macos-15-intel, os: darwin, arch: amd64, python: x64, target: x86_64-apple-darwin }
+          - { runner: macos-15, os: darwin, arch: arm64, python: arm64, target: aarch64-apple-darwin }
+          - { runner: windows-2022, os: windows, arch: amd64, python: x64, target: x86_64-pc-windows-msvc }
+          - { runner: windows-11-arm, os: windows, arch: arm64, python: arm64, target: aarch64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Linux static toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          go-version: "1.26.4"
-          cache: true
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Go tests
-        run: go test -race ./...
-      - name: Go vet
-        run: go vet ./...
-      - name: Native installer and release tests
+          python-version: '3.13'
+          architecture: ${{ matrix.python }}
+      - name: Rust formatting, native tests, and Clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets --features desktop --target '${{ matrix.target }}'
+          cargo clippy --locked --all-targets --features desktop --target '${{ matrix.target }}' -- -D warnings
+      - name: Native installer and release validation
         shell: bash
         run: |
           set -euo pipefail
@@ -42,29 +60,18 @@ jobs:
           diff -q scripts/install.sh docs/public/install.sh
           diff -q scripts/install.ps1 docs/public/install.ps1
           python3 -m unittest discover -s scripts -p 'test_*.py'
-      - name: Build
+      - name: Build and validate native release artifacts
+        run: python3 scripts/build-release.py --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+      - name: Background service smoke with isolated profiles
         shell: bash
-        run: |
-          mkdir -p dist
-          binary=dist/noria
-          if [ "$RUNNER_OS" = Windows ]; then binary=dist/noria.exe; fi
-          go build -o "$binary" ./cmd/noria
-      - name: Build and smoke desktop tray
-        if: runner.os != 'macOS'
-        shell: bash
+        env:
+          NORIA_TEST_SKIP_LOGIN: '1'
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = Windows ]; then
-            go build -ldflags='-H windowsgui' -o dist/noria-tray.exe ./cmd/noria-tray
-            dist/noria-tray.exe --check
-          else
-            CGO_ENABLED=0 go build -o dist/noria-tray ./cmd/noria-tray
-            dist/noria-tray --check
-          fi
-      - name: Background service smoke (isolated state)
-        env:
-          NORIA_TEST_SKIP_LOGIN: "1"
-        run: python3 scripts/test-service-smoke.py
+          suffix=''
+          if [ '${{ matrix.os }}' = windows ]; then suffix=.exe; fi
+          export NORIA_TEST_SERVICE_BIN="$PWD/dist/noria_${{ matrix.os }}_${{ matrix.arch }}$suffix"
+          python3 scripts/test-service-smoke.py
       - name: Windows PowerShell installer syntax
         if: runner.os == 'Windows'
         shell: pwsh
@@ -76,22 +83,13 @@ jobs:
           ) | Out-Null
           if ($errors.Count -gt 0) { throw ($errors | Out-String) }
 
-  native-menu:
-    runs-on: macos-latest
+  go-reference:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.4"
+          go-version-file: go.mod
           cache: true
-      - name: Compile both menu bar architectures
-        run: |
-          mkdir -p dist
-          go build -o dist/noria ./cmd/noria
-          ./apps/menubar/build.sh "$PWD/dist/Noria.app" "$(uname -m)"
-          dist/Noria.app/Contents/MacOS/noria-menubar --check
-          dist/Noria.app/Contents/MacOS/noria-menubar --validate-status-json apps/menubar/Tests/status.json
-          ./apps/menubar/build.sh "$PWD/dist/Noria-intel.app" x86_64
-          ./apps/menubar/build.sh "$PWD/dist/Noria-arm.app" arm64
-      - name: Verify service start and direct restoration
-        run: python3 scripts/test-service-smoke.py
+      - name: Retained Go behavior fixtures (no live clients)
+        run: go test -race ./...

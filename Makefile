@@ -1,49 +1,41 @@
 SHELL := /bin/bash
 
+CARGO ?= cargo
 GO ?= go
-GOFMT ?= gofmt
-BIN_NAME ?= noria
-CMD_NAME ?= noria
-CMD_PATH ?= ./cmd/$(CMD_NAME)
 DIST_DIR ?= dist
-BIN_PATH ?= $(DIST_DIR)/$(BIN_NAME)
 VERSION ?= $(shell cat VERSION)
-LDFLAGS ?= -s -w -X github.com/amxv/noria/internal/buildinfo.Version=$(if $(VERSION),$(VERSION),dev)
+EXE := $(if $(filter Windows_NT,$(OS)),.exe,)
 
-.PHONY: help fmt test test-race vet lint check docs-install docs-dev docs-check docs-build docs-preview build build-tray build-all install-local clean release-tag
+.PHONY: help fmt fmt-check test test-race test-go-parity vet lint check docs-install docs-dev docs-check docs-build docs-preview build build-tray build-all release-native install-local clean release-tag
 
 help:
 	@echo "Noria development and release commands"
-	@echo ""
-	@echo "Targets:"
-	@echo "  make fmt          - format Go files"
-	@echo "  make test         - run go test ./..."
-	@echo "  make vet          - run go vet ./..."
-	@echo "  make lint         - validate native installer and release scripts"
-	@echo "  make check        - fmt + test + vet + lint"
-	@echo "  make docs-install  - install docs dependencies"
-	@echo "  make docs-dev      - run the Astro/ZueDocs dev server"
-	@echo "  make docs-check    - validate the Astro/ZueDocs site"
-	@echo "  make docs-build    - build the Astro/ZueDocs site"
-	@echo "  make docs-preview  - preview the built Astro/ZueDocs site"
-	@echo "  make build        - build local binary to dist/noria"
-	@echo "  make build-tray   - build the native Windows/Linux desktop tray"
-	@echo "  make build-all    - build release binaries for 6 target platforms"
-	@echo "  make install-local - install CLI to ~/.local/bin/noria"
-	@echo "  make clean        - remove dist artifacts"
-	@echo "  make release-tag VERSION=x.y.z - create and push a tag for GitHub Actions"
+	@echo "  make fmt           - format Rust sources"
+	@echo "  make check         - Rust formatting, tests, Clippy, installer/release checks"
+	@echo "  make test-go-parity - run the retained Go reference tests with the race detector"
+	@echo "  make build         - build the Rust CLI to dist/noria"
+	@echo "  make build-tray    - build the Rust Windows/Linux tray (macOS uses Swift)"
+	@echo "  make release-native - build this host's release binary and desktop archive"
+	@echo "  make docs-check    - validate the separate Astro documentation workspace"
+	@echo "  make release-tag VERSION=x.y.z - validate and push a release tag"
 
 fmt:
-	@$(GOFMT) -w $$(find cmd internal -type f -name '*.go')
+	@$(CARGO) fmt --all
+
+fmt-check:
+	@$(CARGO) fmt --all -- --check
 
 test:
-	@$(GO) test ./...
+	@$(CARGO) test --locked --all-targets --features desktop
 
-test-race:
+test-go-parity:
 	@$(GO) test -race ./...
 
+# Compatibility alias while the Go implementation remains the parity oracle.
+test-race: test-go-parity
+
 vet:
-	@$(GO) vet ./...
+	@$(CARGO) clippy --locked --all-targets --features desktop -- -D warnings
 
 lint:
 	@sh -n scripts/install.sh
@@ -51,7 +43,7 @@ lint:
 	@diff -q scripts/install.ps1 docs/public/install.ps1
 	@python3 -m unittest discover -s scripts -p 'test_*.py'
 
-check: fmt test vet lint
+check: fmt-check test vet lint
 
 docs-install:
 	@cd docs && bun install --frozen-lockfile
@@ -71,35 +63,32 @@ docs-preview:
 	@cd docs && bun run preview
 
 build:
-	@mkdir -p $(DIST_DIR)
-	@$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_PATH) $(CMD_PATH)
+	@$(CARGO) build --locked --release --bin noria
+	@mkdir -p "$(DIST_DIR)"
+	@cp "target/release/noria$(EXE)" "$(DIST_DIR)/noria$(EXE)"
 
 build-tray:
-	@mkdir -p $(DIST_DIR)
-	@case "$$($(GO) env GOOS)" in windows) $(GO) build -trimpath -ldflags="-s -w -H windowsgui -X main.version=$(VERSION)" -o $(DIST_DIR)/noria-tray.exe ./cmd/noria-tray ;; linux) $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o $(DIST_DIR)/noria-tray ./cmd/noria-tray ;; *) echo "Native tray is for Windows and Linux; macOS uses Swift" ;; esac
+	@case "$$(uname -s)" in Darwin) echo "macOS uses Swift: apps/menubar/build.sh"; exit 1 ;; esac
+	@$(CARGO) build --locked --release --features desktop --bin noria-tray
+	@mkdir -p "$(DIST_DIR)"
+	@cp "target/release/noria-tray$(EXE)" "$(DIST_DIR)/noria-tray$(EXE)"
 
+release-native:
+	@python3 scripts/build-release.py --output "$(DIST_DIR)"
+
+# Native GUI signing and platform libraries cannot be validated by a single
+# Linux cross-compile. The release workflow builds every target on its own OS.
 build-all:
-	@mkdir -p $(DIST_DIR)
-	@set -e; for target in "darwin amd64" "darwin arm64" "linux amd64" "linux arm64" "windows amd64" "windows arm64"; do \
-		set -- $$target; \
-		GOOS=$$1; GOARCH=$$2; \
-		EXT=""; \
-		if [ "$$GOOS" = "windows" ]; then EXT=".exe"; fi; \
-		echo "Building $(BIN_NAME) for $$GOOS/$$GOARCH"; \
-CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o "$(DIST_DIR)/$(BIN_NAME)_$${GOOS}_$${GOARCH}$${EXT}" $(CMD_PATH); \
-if [ "$$GOOS" != darwin ]; then \
-  GUI=""; if [ "$$GOOS" = windows ]; then GUI="-H windowsgui"; fi; \
-  CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION) $$GUI" -o "$(DIST_DIR)/noria-tray_$${GOOS}_$${GOARCH}$${EXT}" ./cmd/noria-tray; \
-fi; \
-done
+	@echo "All six targets are built by .github/workflows/release.yml on native runners."
+	@echo "Use make release-native to build and validate this host's artifacts."
+	@exit 1
 
 install-local: build
-	@mkdir -p $$HOME/.local/bin
-	@install -m 755 $(BIN_PATH) $$HOME/.local/bin/$(BIN_NAME)
-	@echo "Installed $(BIN_NAME) to $$HOME/.local/bin/$(BIN_NAME)"
+	@mkdir -p "$$HOME/.local/bin"
+	@install -m 755 "$(DIST_DIR)/noria$(EXE)" "$$HOME/.local/bin/noria$(EXE)"
 
 clean:
-	@rm -rf $(DIST_DIR)
+	@rm -rf "$(DIST_DIR)"
 
 release-tag:
 	@test -n "$(VERSION)" || (echo "Usage: make release-tag VERSION=x.y.z" && exit 1)

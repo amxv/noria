@@ -1,7 +1,9 @@
 """Native release metadata tests requiring only Python's standard library."""
 from pathlib import Path
 import json
+import io
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -61,6 +63,51 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn('"**"', workflow)
         self.assertNotIn('"*"', workflow)
         self.assertFalse((ROOT / "docs/scripts/should-build.mjs").exists())
+
+    def write_archive(self, path, system, extra=None, omit=None):
+        files = {"LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.txt"}
+        files |= {"noria.exe", "noria-tray.exe"} if system == "windows" else {"noria"}
+        if system == "linux":
+            files.add("noria-tray")
+        if system == "darwin":
+            files.update(("Noria.app/Contents/MacOS/noria-menubar", "Noria.app/Contents/Info.plist", "Noria.app/Contents/_CodeSignature/CodeResources"))
+        if omit:
+            files.remove(omit)
+        with tarfile.open(path, "w:gz") as archive:
+            for name in sorted(files):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = 7, 0o755
+                archive.addfile(info, io.BytesIO(b"fixture"))
+            if extra:
+                info = tarfile.TarInfo(extra)
+                info.size = 7
+                archive.addfile(info, io.BytesIO(b"fixture"))
+
+    def test_complete_release_and_tampered_checksum(self):
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            self.assertEqual(len(release.expected_artifacts()), 12)
+            for name in release.expected_artifacts():
+                if name.endswith(".tar.gz"):
+                    self.write_archive(directory / name, name.split("_")[1])
+                else:
+                    (directory / name).write_bytes(b"fixture")
+            release.checksums(directory)
+            release.verify(directory)
+            (directory / "noria_linux_arm64").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
+                release.verify(directory)
+
+    def test_archive_rejects_missing_tray_and_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "archive.tar.gz"
+            self.write_archive(path, "linux", omit="noria-tray")
+            with self.assertRaisesRegex(ValueError, "Missing"):
+                release.validate_archive(path, "linux")
+            for extra in ("../outside", "/absolute", "noria", "windows\\escape"):
+                self.write_archive(path, "linux", extra=extra)
+                with self.assertRaises(ValueError):
+                    release.validate_archive(path, "linux")
 
 
 if __name__ == "__main__":

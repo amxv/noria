@@ -1,5 +1,6 @@
 # Build outputs
 /dist
+/target/
 /bin/*-bin
 /bin/*.exe
 

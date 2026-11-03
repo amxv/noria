@@ -45,7 +45,7 @@ curl -fsSL https://noria.ashray.xyz/install.sh | sh
 irm https://noria.ashray.xyz/install.ps1 | iex
 ```
 
-The installer includes a native Swift menu bar app on macOS and a lightweight Go tray app on Windows and Linux for account management, quota usage, and Start/Stop controls. The tray opens on installation, starts at login by default, and reopens on upgrades. Most mainstream Linux desktops, including standard Ubuntu, KDE Plasma, and Linux Mint Cinnamon, have tray support already. Some GNOME installations need their AppIndicator extension enabled.
+The installer includes a native Swift menu bar app on macOS and a Rust tray app on Windows and Linux for account management, quota usage, and Start/Stop controls. The tray opens on installation, starts at login by default, and reopens on upgrades. Most mainstream Linux desktops, including standard Ubuntu, KDE Plasma, and Linux Mint Cinnamon, have tray support already. Some GNOME installations need their AppIndicator extension enabled.
 
 ## Set up once
 
@@ -91,11 +91,15 @@ The [architecture guide](https://noria.ashray.xyz/docs/architecture) explains th
 
 ## Develop
 
-Noria is written in Go. Its macOS menu bar remains native Swift; Windows and Linux use `gogpu/systray` in a separate Go executable. All desktop controls wrap the CLI, which owns accounts, routing, settings, and updates. The website uses Astro and ZueDocs.
+Noria's CLI and router are written in Rust. Its macOS menu bar remains native Swift; Windows and Linux use `tray-icon` in a separate Rust executable. Linux uses its native StatusNotifierItem D-Bus protocol through `ksni`, with no GTK or AppIndicator library dependency. Desktop event loops sleep between menu actions, file notifications, and scheduled refreshes. All desktop controls wrap the CLI, which owns accounts, routing, settings, and updates. The website uses Astro and ZueDocs.
+
+Use Rust 1.90 or newer and Python 3.11 or newer. The previous Go implementation remains in `cmd/` and `internal/` as a behavior reference during migration; release builds use Cargo.
 
 ```sh
 make check
-go test -race ./...
+make test-go-parity
+make build
+make build-tray # Windows/Linux; macOS uses apps/menubar/build.sh
 make docs-install
 make docs-check
 ```
