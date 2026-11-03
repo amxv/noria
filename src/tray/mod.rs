@@ -521,6 +521,9 @@ pub fn main() -> Result<()> {
         .max_blocking_threads(4)
         .enable_all()
         .build()?;
+    // Direct launches (including a Windows double-click) need the same private
+    // initialization as `noria tray open`. Keep settings ownership in the CLI.
+    runtime.block_on(cli.run(&["init".into()], 15, CancellationToken::new()))?;
     let tray = TrayIconBuilder::new()
         .with_tooltip("Noria · loading")
         .with_icon(menu::icon(false))
