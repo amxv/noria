@@ -20,10 +20,11 @@ with tempfile.TemporaryDirectory(prefix='noria-service-smoke-', dir=None if os.n
     settings = client / 'settings.json'
     initial = {'theme': 'dark', 'apiKeyHelper': 'original-helper', 'env': {'OTHER': 'sentinel'}}
     settings.write_text(json.dumps(initial))
-    env = dict(os.environ, HOME=str(root), XDG_CONFIG_HOME=str(root), XDG_CACHE_HOME=str(root), NORIA_HOME=str(home))
+    env = dict(os.environ, HOME=str(root), USERPROFILE=str(root), XDG_CONFIG_HOME=str(root / 'config'), XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'), NORIA_HOME=str(home), APPDATA=str(root / 'appdata'), LOCALAPPDATA=str(root / 'localappdata'))
     for name in tuple(env):
         if name.startswith(('ANTHROPIC_', 'CLAUDE_', 'CODEX_', 'OPENAI_')):
             env.pop(name)
+    env.update(CODEX_HOME=str(root / 'codex'), CLAUDE_CONFIG_DIR=str(root / 'claude'))
     def run(*args, check=True):
         start = time.monotonic()
         value = subprocess.run([str(binary), *args], env=env, cwd=root, capture_output=True, text=True, timeout=25)
@@ -64,7 +65,8 @@ with tempfile.TemporaryDirectory(prefix='noria-service-smoke-', dir=None if os.n
         run('stop', '--json')
         run('stop', '--json')
         assert json.loads(settings.read_text()) == dict(initial, theme='light')
-        print('PASS: OS-managed background lifecycle, idempotence, login preference, direct restoration, and unrelated edits.', flush=True)
+        login = ', login preference' if os.environ.get('NORIA_TEST_SKIP_LOGIN') != '1' else ' (login preference skipped)'
+        print(f'PASS: background lifecycle, idempotence{login}, direct restoration, and unrelated edits.', flush=True)
     finally:
         run('stop', '--json', check=False)
         # Only this test's unique job; never touch another Noria home/service.
