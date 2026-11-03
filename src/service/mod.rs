@@ -147,6 +147,32 @@ pub fn log_file(home: &Path, name: &str) -> Result<fs::File> {
     Ok(options.open(path)?)
 }
 
+#[cfg(windows)]
+pub(crate) fn disable_implicit_stdio_inheritance() -> Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    // A CLI launched with captured output inherits those pipe handles. Windows
+    // otherwise passes them to background children even when their selected
+    // stdout/stderr point to the service log, keeping the caller's pipes open.
+    // Rust duplicates explicitly selected Stdio handles as inheritable during
+    // spawn, so foreground commands and intentional log inheritance still work.
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: querying and changing flags on the process's standard handles
+        // does not transfer ownership or close them. Detached apps may have none.
+        let handle = unsafe { GetStdHandle(which) };
+        if !handle.is_null()
+            && handle != INVALID_HANDLE_VALUE
+            && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0
+        {
+            return Err(std::io::Error::last_os_error())
+                .context("disable implicit inheritance of standard handles");
+        }
+    }
+    Ok(())
+}
+
 pub fn detached(command: &mut Command) {
     #[cfg(unix)]
     {

@@ -18,6 +18,8 @@ use std::{
 };
 
 pub async fn run(mut args: Vec<String>) -> Result<()> {
+    #[cfg(windows)]
+    service::disable_implicit_stdio_inheritance()?;
     let mut selected = None;
     let mut index = 0;
     while index < args.len() {

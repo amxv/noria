@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='noria-service-smoke-', dir=None if os.n
     env.update(CODEX_HOME=str(root / 'codex'), CLAUDE_CONFIG_DIR=str(root / 'claude'))
     def run(*args, check=True):
         start = time.monotonic()
+        print(f'Running {" ".join(args)}', flush=True)
         value = subprocess.run([str(binary), *args], env=env, cwd=root, capture_output=True, text=True, timeout=25)
         if check and value.returncode:
             raise RuntimeError(f'{args}: {value.stderr}\n{value.stdout}')
