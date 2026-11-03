@@ -363,8 +363,26 @@ mod tests {
     #[tokio::test]
     async fn intent_watcher_sleeps_on_reads_and_wakes_on_atomic_replacement() {
         let temp = tempfile::tempdir().unwrap();
-        set_intent(temp.path(), Path::new("noria"), true).unwrap();
         let (_watcher, mut changes) = watch_intent(temp.path()).unwrap();
+        set_intent(temp.path(), Path::new("noria"), true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), changes.recv())
+                .await
+                .unwrap(),
+            Some(())
+        );
+        // Native watchers deliver writes asynchronously and may report several
+        // events for one atomic replacement. Establish quiescence after observing
+        // the initial write before checking that reads do not wake the supervisor.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while let Ok(event) =
+                tokio::time::timeout(Duration::from_millis(150), changes.recv()).await
+            {
+                assert_eq!(event, Some(()));
+            }
+        })
+        .await
+        .expect("initial intent notifications did not become quiet");
         for _ in 0..10 {
             assert!(read_intent(temp.path()).wanted);
         }
