@@ -485,10 +485,8 @@ pub async fn sync_updates(home: &Path, exe: &Path) -> Result<()> {
             if path.exists() {
                 fs::remove_file(path)?;
             }
-            if loaded {
-                if let Ok(_guard) = config::lock(home, "upgrade") {
-                    service::run("/bin/launchctl", &["bootout".into(), job]).await?;
-                }
+            if loaded && let Ok(_guard) = config::lock(home, "upgrade") {
+                service::run("/bin/launchctl", &["bootout".into(), job]).await?;
             }
             return Ok(());
         }

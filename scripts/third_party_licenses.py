@@ -50,17 +50,17 @@ def write_notices(destination: Path):
                 paths.update(path for path in (root / folder).rglob("*") if path.is_file())
         curated = None
         if not paths:
-            catalog = json.loads((ROOT / "scripts/licenses/sources.json").read_text())
+            catalog = json.loads((ROOT / "scripts/licenses/sources.json").read_text(encoding="utf-8"))
             curated = catalog.get(package['name'] + '@' + package['version'])
             if not curated:
                 raise ValueError(f"No packaged or reviewed upstream license text for {package['name']} {package['version']}")
         sections.append(f"\n{'=' * 72}\n{package['name']} {package['version']}\nSPDX: {package.get('license', 'See included license')}\nSource: {package.get('repository') or package['source']}\n")
         if curated:
-            sections.append(f"\nUpstream license: {curated['url']}\n{(ROOT / 'scripts/licenses' / curated['file']).read_text()}\n")
+            sections.append(f"\nUpstream license: {curated['url']}\n{(ROOT / 'scripts/licenses' / curated['file']).read_text(encoding='utf-8')}\n")
             sections.append(f"\nAuthors listed by upstream: {', '.join(package.get('authors', []))}\n")
-            sections.append(f"\nLicense text referenced by upstream: {curated['license_text_url']}\n{(ROOT / 'scripts/licenses' / curated['license_text']).read_text()}\n")
+            sections.append(f"\nLicense text referenced by upstream: {curated['license_text_url']}\n{(ROOT / 'scripts/licenses' / curated['license_text']).read_text(encoding='utf-8')}\n")
         for path in sorted(paths):
-            sections.append(f"\n--- {path.relative_to(root)} ---\n{path.read_text(errors='replace')}\n")
+            sections.append(f"\n--- {path.relative_to(root)} ---\n{path.read_text(encoding='utf-8', errors='replace')}\n")
     destination.write_text("".join(sections), encoding="utf-8")
 
 
