@@ -61,6 +61,23 @@ func TestFableQuotaReportedPerClaudeAccountOnly(t *testing.T) {
 		t.Fatalf("optional Claude Fable row incorrect: eligible=%+v missing=%+v codex=%+v", eligible, missing, codex)
 	}
 }
+func TestTrayHidesStaleAndFailedRefreshPercentages(t *testing.T) {
+	used := 23.0
+	now := time.Now()
+	a := Account{Provider: "claude", Snapshot: &Snapshot{Available: true, ObservedAt: now, Windows: []QuotaWindow{{Name: "seven_day_fable", Model: "fable", Duration: int64(7 * 24 * time.Hour), UsedPercent: &used}}}}
+	if rows := a.CurrentWindows(now); len(rows) != 1 {
+		t.Fatalf("fresh server quota missing: %+v", rows)
+	}
+	a.LastRefresh = &QuotaRefreshStatus{AttemptedAt: now.Add(time.Second), Error: "auth failure"}
+	if a.QuotaIsCurrent(now) || len(a.CurrentWindows(now)) != 0 {
+		t.Fatal("failed refresh still renders old quota as live")
+	}
+	a.LastRefresh = nil
+	a.Snapshot.ObservedAt = now.Add(-10 * time.Minute)
+	if a.QuotaIsCurrent(now) || len(a.CurrentWindows(now)) != 0 {
+		t.Fatal("stale quota still renders as current")
+	}
+}
 func TestInvalidDashboardSchema(t *testing.T) {
 	if _, err := ParseDashboard([]byte(`{"schema_version":2}`)); err == nil {
 		t.Fatal("future schema accepted")

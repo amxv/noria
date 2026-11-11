@@ -182,6 +182,37 @@ func TestClaudeFableWeeklyWindowFromOAuthLimits(t *testing.T) {
 	}
 }
 
+func TestClaudeLiveCountersSupersedeLegacyCachedCounters(t *testing.T) {
+	// Mirrors the observed discrepancy: legacy 7/6/11 used vs live 0/12/23.
+	raw := `{"rate_limits_available":true,"rate_limits":{
+"five_hour":{"utilization":7,"resets_at":"2026-11-11T11:29:59Z"},
+"seven_day":{"utilization":6,"resets_at":"2026-11-15T15:59:59Z"},
+"seven_day_fable":{"utilization":11,"resets_at":"2026-11-15T15:59:59Z"},
+"limits":[
+{"kind":"session","group":"session","percent":0,"resets_at":"2026-11-11T21:59:59Z"},
+{"kind":"weekly_all","group":"weekly","percent":12,"resets_at":"2026-11-15T15:59:59Z"},
+{"kind":"weekly_scoped","group":"weekly","percent":23,"resets_at":"2026-11-15T15:59:59Z","scope":{"model":{"display_name":"Fable"}}}]
+}}`
+	s, err := parseClaude("a", []byte(raw), time.Now())
+	if err != nil || len(s.Windows) != 3 {
+		t.Fatalf("cannot parse current OAuth counters: %+v %v", s, err)
+	}
+	for _, want := range []struct {
+		name  string
+		value float64
+	}{{"five_hour", 0}, {"seven_day", 12}, {"seven_day_fable", 23}} {
+		found := false
+		for _, w := range s.Windows {
+			if w.Name == want.name && w.Used != nil && *w.Used == want.value {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected live %s=%.0f, got %+v", want.name, want.value, s.Windows)
+		}
+	}
+}
+
 func TestClaudeFableOnlyWhenServerReportsIt(t *testing.T) {
 	for _, raw := range []string{
 		`{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":22,"resets_at":null}}}`,

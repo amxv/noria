@@ -15,48 +15,44 @@ import (
 	"github.com/amxv/noria/internal/model"
 )
 
-// claudeQuota talks to the installed native Claude Code executable over the
-// same stream-json control channel used by the Agent SDK. The SDK's get_usage
-// method sends a control_request with subtype get_usage; its Node wrapper is
-// not needed. This remains an experimental Claude control protocol: fail
-// closed on a changed schema, never send a prompt or silently spend tokens.
+// The OAuth usage endpoint is the source of truth for subscription quotas.
+// Claude Code's native get_usage can return cached counters for an isolated
+// profile, which need not agree with the current claude.ai usage dashboard.
+// Refresh expired isolated OAuth credentials under the Refresh profile lock,
+// then read the live endpoint without sending a model prompt. Fall back to
+// native control only if the account has no readable OAuth credential.
 func (m *Manager) claudeQuota(ctx context.Context, a model.Account, p string) (model.Snapshot, error) {
 	started := time.Now()
-	snapshot, err := m.claudeControlUsage(ctx, a, p, started)
-	if err != nil || hasClaudeFableWindow(snapshot) {
-		return snapshot, err
-	}
-	// Claude Code can return rate_limits=null or only generic windows even when
-	// its usage endpoint reports a separate Fable weekly bucket. Read the same
-	// isolated account's OAuth usage to discover optional scoped quotas; do not
-	// infer Fable eligibility from a subscription plan. This is a read-only GET,
-	// never a model prompt, Node process, or credit-consuming reset.
 	credential, expired, err := m.readCredential(ctx, a, p)
-	if err != nil { // Keep usable native telemetry if OAuth is unavailable.
-		return snapshot, nil
+	if err != nil {
+		return m.claudeControlUsage(ctx, a, p, started)
 	}
 	if expired {
-		if len(snapshot.Windows) != 0 {
-			return snapshot, nil
+		if err := m.refreshClaudeOAuth(ctx, a, p); err != nil {
+			return model.Snapshot{}, fmt.Errorf("Claude usage credential refresh failed; sign in again: %w", err)
 		}
-		return snapshot, errors.New("Claude OAuth credential expired; sign in again")
+		credential, expired, err = m.readCredential(ctx, a, p)
+		if err != nil || expired {
+			return model.Snapshot{}, errors.New("Claude OAuth credential refresh was not persisted; sign in again")
+		}
 	}
 	oauth, err := m.claudeOAuthUsage(ctx, a.ID, credential.Token, started)
-	if err != nil && len(snapshot.Windows) != 0 {
-		return snapshot, nil
-	}
-	if err == nil && len(snapshot.Windows) != 0 {
-		// Preserve the native general limits; only add the optional scoped
-		// bucket discovered through OAuth.
-		for _, window := range oauth.Windows {
-			if window.Name == "seven_day_fable" && window.Model == "fable" {
-				putClaudeFableWindow(&snapshot, window)
-			}
+	if errors.Is(err, errClaudeUsageUnauthorized) {
+		// A token can be revoked before its expiry. Make exactly one refresh
+		// attempt, without sending a model prompt or repeating indefinitely.
+		if rotationErr := m.refreshClaudeOAuth(ctx, a, p); rotationErr != nil {
+			return model.Snapshot{}, fmt.Errorf("Claude usage authorization failed; sign in again: %w", rotationErr)
 		}
-		return snapshot, nil
+		credential, expired, err = m.readCredential(ctx, a, p)
+		if err != nil || expired {
+			return model.Snapshot{}, errors.New("Claude OAuth credential refresh was not persisted; sign in again")
+		}
+		oauth, err = m.claudeOAuthUsage(ctx, a.ID, credential.Token, time.Now())
 	}
 	return oauth, err
 }
+
+var errClaudeUsageUnauthorized = errors.New("Claude usage OAuth authorization rejected")
 
 func hasClaudeFableWindow(snapshot model.Snapshot) bool {
 	for _, window := range snapshot.Windows {
@@ -171,7 +167,7 @@ func (m *Manager) claudeOAuthUsage(ctx context.Context, id, token string, starte
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return model.Snapshot{}, errors.New("Claude subscription usage authorization failed; sign in again")
+			return model.Snapshot{}, errClaudeUsageUnauthorized
 		}
 		return model.Snapshot{}, fmt.Errorf("Claude subscription usage returned HTTP %d", resp.StatusCode)
 	}
@@ -276,11 +272,9 @@ func parseClaude(id string, data []byte, now time.Time) (model.Snapshot, error) 
 		}
 		s.Windows = append(s.Windows, w)
 	}
-	// The OAuth API exposes the Fable weekly allowance in limits[], not in
-	// seven_day_fable. Newer native control responses may also expose it under
-	// model_scoped. Both are optional; absent means no Fable row, even if the
-	// subscriber's plan would ordinarily qualify. Prefer these scoped values
-	// over a legacy seven_day_fable field if both are present.
+	// The live OAuth endpoint's limits[] counters supersede the legacy named
+	// windows, which can lag behind claude.ai. Never sum or average these two
+	// representations. Model-scoped Fable is optional and never plan-inferred.
 	if raw := limits["model_scoped"]; !absent(raw) {
 		var items []struct {
 			DisplayName string          `json:"display_name"`
@@ -317,14 +311,22 @@ func parseClaude(id string, data []byte, now time.Time) (model.Snapshot, error) 
 			return s, errors.New("invalid Claude scoped limits")
 		}
 		for _, item := range items {
-			if item.Kind != "weekly_scoped" || (item.Group != "" && item.Group != "weekly") || !claudeFableName(item.Scope.Model.DisplayName) {
+			var name, modelName string
+			switch {
+			case item.Kind == "session" && (item.Group == "" || item.Group == "session"):
+				name = "five_hour"
+			case item.Kind == "weekly_all" && (item.Group == "" || item.Group == "weekly"):
+				name = "seven_day"
+			case item.Kind == "weekly_scoped" && (item.Group == "" || item.Group == "weekly") && claudeFableName(item.Scope.Model.DisplayName):
+				name, modelName = "seven_day_fable", "fable"
+			default:
 				continue
 			}
-			w, err := claudeFableWindow(item.Percent, item.ResetsAt)
+			w, err := claudeUsageWindow(name, modelName, item.Percent, item.ResetsAt)
 			if err != nil {
 				return s, err
 			}
-			putClaudeFableWindow(&s, w)
+			putClaudeWindow(&s, w)
 		}
 	}
 	s.Available = true
@@ -337,7 +339,14 @@ func claudeFableName(name string) bool {
 }
 
 func claudeFableWindow(usage, resetAt json.RawMessage) (model.Window, error) {
-	w := model.Window{Name: "seven_day_fable", LimitID: "seven_day_fable", Model: "fable", Duration: 7 * 24 * time.Hour}
+	return claudeUsageWindow("seven_day_fable", "fable", usage, resetAt)
+}
+
+func claudeUsageWindow(name, modelName string, usage, resetAt json.RawMessage) (model.Window, error) {
+	w := model.Window{Name: name, LimitID: name, Model: modelName, Duration: 7 * 24 * time.Hour}
+	if name == "five_hour" {
+		w.Duration = 5 * time.Hour
+	}
 	if len(usage) == 0 || len(resetAt) == 0 {
 		return w, errors.New("Claude Fable weekly usage fields missing")
 	}
@@ -359,6 +368,10 @@ func claudeFableWindow(usage, resetAt json.RawMessage) (model.Window, error) {
 }
 
 func putClaudeFableWindow(snapshot *model.Snapshot, window model.Window) {
+	putClaudeWindow(snapshot, window)
+}
+
+func putClaudeWindow(snapshot *model.Snapshot, window model.Window) {
 	for i := range snapshot.Windows {
 		if snapshot.Windows[i].Name == window.Name && snapshot.Windows[i].Model == window.Model {
 			snapshot.Windows[i] = window

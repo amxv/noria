@@ -7,6 +7,7 @@ import (
 	"github.com/amxv/noria/internal/config"
 	"github.com/amxv/noria/internal/core"
 	"github.com/amxv/noria/internal/integration"
+	"github.com/amxv/noria/internal/service"
 	"io"
 	"net/http"
 	"os"
@@ -52,6 +53,19 @@ func dashboard(home string) (map[string]any, error) {
 		v["preferences"].(map[string]bool)["tray_at_login"] = c.MenuBarAtLogin
 	}
 	v["observed_at"] = time.Now()
+	refreshes := readQuotaRefreshStatus(home)
+	if entries, ok := v["accounts"].([]any); ok {
+		for _, entry := range entries {
+			account, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := account["id"].(string)
+			if result, exists := refreshes[id]; exists {
+				account["last_refresh"] = result
+			}
+		}
+	}
 	return v, nil
 }
 func healthCommand(home string, args []string, out io.Writer) error {
@@ -69,7 +83,42 @@ func healthCommand(home string, args []string, out io.Writer) error {
 	}
 	checks := []map[string]any{}
 	_, err := controlRequest(home, http.MethodGet, "/_noria/health", nil)
-	checks = append(checks, map[string]any{"name": "Local router", "ok": err == nil, "detail": c.Listen})
+	running := err == nil
+	wanted := service.ReadIntent(home).Wanted
+	routerDetail := c.Listen
+	if !running && !wanted {
+		routerDetail = "Stopped by choice (quota refresh works while stopped)"
+	}
+	if !running && wanted {
+		routerDetail = "Expected to be running, but is unreachable at " + c.Listen
+	}
+	checks = append(checks, map[string]any{"name": "Local router", "ok": running || !wanted, "detail": routerDetail})
+	refreshes := readQuotaRefreshStatus(home)
+	for _, a := range c.Accounts {
+		if !a.Enabled {
+			continue
+		}
+		name := a.DisplayName()
+		if name == "" {
+			name = a.Provider
+		}
+		check := map[string]any{"name": a.Provider + " quota · " + name, "ok": false}
+		if last, found := refreshes[a.ID]; found {
+			if !last.OK {
+				check["detail"] = "Last refresh failed: " + last.Error
+			}
+			if last.OK && time.Since(last.AttemptedAt) <= 3*time.Minute {
+				check["ok"] = true
+				check["detail"] = "Usage refreshed " + last.AttemptedAt.Local().Format("3:04 PM")
+			}
+			if last.OK && check["ok"] == false {
+				check["detail"] = "Quota snapshot is stale; refresh usage to get current values"
+			}
+		} else {
+			check["detail"] = "No quota refresh recorded; use Refresh Usage"
+		}
+		checks = append(checks, check)
+	}
 	for _, view := range views {
 		checks = append(checks, map[string]any{"name": view.Provider + " settings", "ok": view.Healthy, "detail": view.Path})
 	}
@@ -91,7 +140,7 @@ func healthCommand(home string, args []string, out io.Writer) error {
 	for _, v := range checks {
 		ok = ok && v["ok"] == true
 	}
-	report := map[string]any{"ok": ok, "checks": checks, "note": "Configuration and local reachability only; no live model request was sent. Reopen clients after routing changes."}
+	report := map[string]any{"ok": ok, "checks": checks, "note": "Quota health reflects the latest recorded read; run Refresh Usage to check the provider again. No model request was sent."}
 	if len(args) == 1 && args[0] == "--json" {
 		return printJSON(out, report)
 	}

@@ -23,12 +23,37 @@ type Preferences struct {
 	AutoUpdate   bool `json:"auto_update"`
 }
 type Account struct {
-	ID       string    `json:"id"`
-	Email    string    `json:"email"`
-	Alias    string    `json:"alias"`
-	Provider string    `json:"provider"`
-	Enabled  bool      `json:"enabled"`
-	Snapshot *Snapshot `json:"snapshot"`
+	ID          string              `json:"id"`
+	Email       string              `json:"email"`
+	Alias       string              `json:"alias"`
+	Provider    string              `json:"provider"`
+	Enabled     bool                `json:"enabled"`
+	Snapshot    *Snapshot           `json:"snapshot"`
+	LastRefresh *QuotaRefreshStatus `json:"last_refresh"`
+}
+
+type QuotaRefreshStatus struct {
+	AttemptedAt time.Time `json:"attempted_at"`
+	OK          bool      `json:"ok"`
+	Error       string    `json:"error"`
+}
+
+func (a Account) QuotaIsCurrent(now time.Time) bool {
+	if a.Snapshot == nil || !a.Snapshot.Available {
+		return false
+	}
+	age := now.Sub(a.Snapshot.ObservedAt)
+	if age < -30*time.Second || age > 3*time.Minute {
+		return false
+	}
+	return a.LastRefresh == nil || a.LastRefresh.OK || a.LastRefresh.AttemptedAt.Before(a.Snapshot.ObservedAt)
+}
+
+func (a Account) CurrentWindows(now time.Time) []QuotaRow {
+	if !a.QuotaIsCurrent(now) {
+		return nil
+	}
+	return a.VisibleWindows()
 }
 
 func (a Account) Title() string {

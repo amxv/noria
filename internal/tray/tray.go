@@ -73,10 +73,11 @@ func (a *app) quit() {
 func (a *app) background() {
 	a.loadStatus()
 	a.syncUpdateAgent()
+	go a.refreshQuota()
 	// Keep the menu useful even when Linux's AppIndicator host doesn't emit an
 	// open-menu event. Live refreshes do not send model prompts.
 	statusTick := time.NewTicker(30 * time.Second)
-	quotaTick := time.NewTicker(5 * time.Minute)
+	quotaTick := time.NewTicker(2 * time.Minute)
 	updateTick := time.NewTicker(time.Hour)
 	controlTick := time.NewTicker(time.Second)
 	defer statusTick.Stop()
@@ -207,7 +208,7 @@ func (a *app) refreshQuota() {
 		a.mu.Lock()
 		a.quotaBusy = false
 		if err != nil {
-			a.refreshMessage = "Some accounts need attention · Health Check"
+			a.refreshMessage = "Refresh failed · check account details"
 		}
 		a.renderLocked()
 		a.mu.Unlock()

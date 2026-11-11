@@ -55,6 +55,21 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--validate-f
         exit(0)
     } catch { fputs("Invalid Fable status schema: \(error.localizedDescription)\n", stderr); exit(1) }
 }
+if CommandLine.arguments.contains("--validate-quota-freshness") {
+    let now = Date()
+    func account(observed: Date, failedAt: Date? = nil) -> AccountStatus {
+        AccountStatus(id: "fixture", email: "fixture@example.com", alias: nil,
+            provider: "claude", enabled: true, inflight: 0,
+            snapshot: QuotaSnapshot(observed_at: observed, available: true, auth_invalid: nil, windows: []),
+            last_refresh: failedAt.map { QuotaRefreshStatus(attempted_at: $0, ok: false, error: "auth failed") })
+    }
+    guard quotaIsCurrent(for: account(observed: now), now: now),
+          !quotaIsCurrent(for: account(observed: now.addingTimeInterval(-600)), now: now),
+          !quotaIsCurrent(for: account(observed: now.addingTimeInterval(-45), failedAt: now), now: now)
+    else { exit(1) }
+    print("Native menu hides stale and failed quota data instead of presenting it as live")
+    exit(0)
+}
 let home = selectedHome()
 do { try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
 catch { fputs("Cannot open the Noria private home.\n", stderr); exit(1) }

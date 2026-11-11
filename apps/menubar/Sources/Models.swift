@@ -13,6 +13,16 @@ struct QuotaSnapshot: Decodable {
     let auth_invalid: Bool?
     let windows: [QuotaWindow]?
 }
+struct QuotaRefreshStatus: Decodable {
+    let attempted_at: Date
+    let ok: Bool
+    let error: String?
+}
+struct QuotaRefreshResult: Decodable {
+    let account: String
+    let ok: Bool
+    let error: String?
+}
 struct AccountStatus: Decodable {
     let id: String
     let email: String?
@@ -21,7 +31,19 @@ struct AccountStatus: Decodable {
     let enabled: Bool
     let inflight: Int?
     let snapshot: QuotaSnapshot?
+    let last_refresh: QuotaRefreshStatus?
     var title: String { if let alias, !alias.isEmpty { return alias }; if let email, !email.isEmpty { return email }; return "Sign-in needed" }
+}
+
+// A last-known percentage must never be presented as a live quota if the
+// read has failed or the snapshot is older than the polling interval.
+func quotaIsCurrent(for account: AccountStatus, now: Date = Date()) -> Bool {
+    guard let snapshot = account.snapshot, snapshot.available else { return false }
+    let age = now.timeIntervalSince(snapshot.observed_at)
+    guard age >= -30 && age <= 180 else { return false }
+    if let refresh = account.last_refresh,
+       !refresh.ok && refresh.attempted_at >= snapshot.observed_at { return false }
+    return true
 }
 struct Preferences: Decodable {
     let start_at_login: Bool

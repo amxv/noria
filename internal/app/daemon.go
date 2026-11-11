@@ -125,6 +125,9 @@ func (r *refresher) refresh(ctx context.Context, id string) ([]refreshResult, er
 	if current, e := config.Load(r.home); e == nil {
 		_ = r.s.SetAccounts(current.Accounts)
 	}
+	if err := recordQuotaRefresh(r.home, results); err != nil {
+		return results, err
+	}
 
 	return results, nil
 }

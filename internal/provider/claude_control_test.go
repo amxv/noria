@@ -83,7 +83,7 @@ func claudeFixture() {
 	}
 }
 
-func TestClaudeNullNativeUsageReadsSameProfileOAuthWithoutNode(t *testing.T) {
+func TestClaudeOAuthUsagePreferredWithoutStartingNativeProcess(t *testing.T) {
 	m, a := fixtureProfile(t, "claude")
 	m.claudeCommand = os.Args[0]
 	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
@@ -115,17 +115,17 @@ func TestClaudeNullNativeUsageReadsSameProfileOAuthWithoutNode(t *testing.T) {
 	if want := time.Date(2026, time.October, 24, 21, 59, 59, 628557000, time.UTC); !snapshot.Windows[1].ResetsAt.Equal(want) {
 		t.Fatal("weekly reset timestamp changed")
 	}
-	trace, err := os.ReadFile(filepath.Join(a.Profile, "claude-calls"))
-	if err != nil || strings.TrimSpace(string(trace)) != "initialize\nget_usage" {
-		t.Fatalf("native CLI was not consulted first: %q %v", trace, err)
+	if _, err := os.Stat(filepath.Join(a.Profile, "claude-calls")); !os.IsNotExist(err) {
+		t.Fatalf("live OAuth usage must not start the native control process: %v", err)
 	}
 }
 
-func TestClaudeGenericNativeUsageDiscoversOptionalOAuthFable(t *testing.T) {
+func TestClaudeOAuthUsageProvidesGeneralAndFableWindows(t *testing.T) {
 	m, a := fixtureProfile(t, "claude")
 	m.claudeCommand = os.Args[0]
 	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
-	// Native reports general quotas but not the model-scoped Fable window.
+	// The authenticated live usage endpoint is preferred over the native
+	// control reader (which may report cached values).
 	if err := os.WriteFile(filepath.Join(a.Profile, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"fixture-access","expiresAt":4102444800000}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,8 @@ func TestClaudeGenericNativeUsageDiscoversOptionalOAuthFable(t *testing.T) {
 	if err != nil || calls != 1 || !s.Available || len(s.Windows) != 3 || !hasClaudeFableWindow(s) {
 		t.Fatalf("missing optional Fable usage when native only reports generic windows: %+v %v calls=%d", s, err, calls)
 	}
-	if s.Windows[0].Used == nil || *s.Windows[0].Used != 12.5 || s.Windows[1].Used == nil || *s.Windows[1].Used != 45 {
-		t.Fatalf("OAuth Fable discovery changed the native general windows: %+v", s.Windows)
+	if s.Windows[0].Used == nil || *s.Windows[0].Used != 3 || s.Windows[1].Used == nil || *s.Windows[1].Used != 0 {
+		t.Fatalf("live OAuth general windows were not preserved: %+v", s.Windows)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestClaudeNativeFableDoesNotRequireOAuth(t *testing.T) {
 	}
 }
 
-func TestClaudeOptionalOAuthFailureKeepsNativeUsage(t *testing.T) {
+func TestClaudeOAuthFailureCannotMasqueradeAsFreshNativeUsage(t *testing.T) {
 	m, a := fixtureProfile(t, "claude")
 	m.claudeCommand = os.Args[0]
 	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
@@ -173,8 +173,8 @@ func TestClaudeOptionalOAuthFailureKeepsNativeUsage(t *testing.T) {
 	defer upstream.Close()
 	m.claudeUsageURL = upstream.URL
 	s, err := m.Refresh(context.Background(), a)
-	if err != nil || !s.Available || len(s.Windows) != 2 || hasClaudeFableWindow(s) {
-		t.Fatalf("optional Fable detection must not break existing quota view: %+v %v", s, err)
+	if err == nil || s.Available || len(s.Windows) != 0 || strings.Contains(err.Error(), "should-not-be-logged") {
+		t.Fatalf("failed live fetch must not return or leak stale native quotas: %+v %v", s, err)
 	}
 }
 
@@ -235,6 +235,87 @@ func TestClaudeQuotaUsesInstalledBinaryNoNodeAndNoUserTurn(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(a.Profile, "claude-calls"))
 	if err != nil || strings.TrimSpace(string(data)) != "initialize\nget_usage" {
 		t.Fatalf("unexpected Claude control sequence: %q %v", data, err)
+	}
+}
+
+func TestClaudeQuotaRotatesExpiredOAuthBeforeReadingUsage(t *testing.T) {
+	m, a := fixtureProfile(t, "claude")
+	m.claudeCommand = os.Args[0]
+	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
+	credentialFile := filepath.Join(a.Profile, ".credentials.json")
+	if err := os.WriteFile(credentialFile, []byte(`{"claudeAiOauth":{"accessToken":"expired-access","refreshToken":"previous-refresh","expiresAt":1,"scopes":["user:inference"]},"preserve":"value"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var tokenCalls, usageCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			tokenCalls++
+			var body map[string]string
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body["refresh_token"] != "previous-refresh" || body["grant_type"] != "refresh_token" {
+				t.Error("rotated with an incorrect refresh request")
+			}
+			_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
+		case "/usage":
+			usageCalls++
+			if r.Header.Get("Authorization") != "Bearer new-access" {
+				t.Error("used an expired OAuth access token")
+			}
+			_, _ = io.WriteString(w, `{"limits":[{"kind":"session","group":"session","percent":0,"resets_at":null},{"kind":"weekly_all","group":"weekly","percent":12,"resets_at":null},{"kind":"weekly_scoped","group":"weekly","percent":23,"resets_at":null,"scope":{"model":{"display_name":"Fable"}}}]}`)
+		default:
+			t.Errorf("unexpected provider request %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	m.claudeTokenURL, m.claudeUsageURL = upstream.URL+"/token", upstream.URL+"/usage"
+	s, err := m.Refresh(context.Background(), a)
+	if err != nil || !s.Available || len(s.Windows) != 3 || tokenCalls != 1 || usageCalls != 1 {
+		t.Fatalf("expired credential was not rotated before live usage: %+v err=%v rotation=%d usage=%d", s, err, tokenCalls, usageCalls)
+	}
+	updated, err := os.ReadFile(credentialFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]json.RawMessage
+	var oauth struct {
+		Access  string `json:"accessToken"`
+		Refresh string `json:"refreshToken"`
+	}
+	if json.Unmarshal(updated, &root) != nil || json.Unmarshal(root["claudeAiOauth"], &oauth) != nil || oauth.Access != "new-access" || oauth.Refresh != "new-refresh" || string(root["preserve"]) != `"value"` {
+		t.Fatal("isolated credential rotation did not preserve the native credential file")
+	}
+	if _, err := os.Stat(filepath.Join(a.Profile, "claude-calls")); !os.IsNotExist(err) {
+		t.Fatal("unexpected native Claude model process")
+	}
+}
+
+func TestClaudeQuotaRetriesOnceOnRevokedOAuth(t *testing.T) {
+	m, a := fixtureProfile(t, "claude")
+	if err := os.WriteFile(filepath.Join(a.Profile, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"revoked-access","refreshToken":"old-refresh","expiresAt":4102444800000}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var gets, refreshes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			refreshes++
+			_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`)
+			return
+		}
+		gets++
+		if r.Header.Get("Authorization") == "Bearer revoked-access" {
+			w.WriteHeader(401)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer new-access" {
+			t.Error("unexpected access token")
+		}
+		_, _ = io.WriteString(w, `{"seven_day":{"utilization":12,"resets_at":null}}`)
+	}))
+	defer server.Close()
+	m.claudeUsageURL, m.claudeTokenURL = server.URL+"/usage", server.URL+"/token"
+	s, err := m.Refresh(context.Background(), a)
+	if err != nil || !s.Available || gets != 2 || refreshes != 1 {
+		t.Fatalf("revoked token was not rotated exactly once: %+v %v gets=%d refreshes=%d", s, err, gets, refreshes)
 	}
 }
 

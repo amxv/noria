@@ -128,15 +128,23 @@ func (a *app) addAccount(menu *systray.Menu, account Account) {
 		}()
 	})
 	menu.AddSubmenu(name, submenu)
-	rows := account.VisibleWindows()
+	rows := account.CurrentWindows(time.Now())
 	for _, row := range rows {
 		disabled(menu, "    "+row.Text(time.Now()))
 	}
 	if len(rows) == 0 {
-		disabled(menu, "    Usage unavailable")
+		if a.quotaBusy {
+			disabled(menu, "    Checking live usage…")
+		} else if account.QuotaIsCurrent(time.Now()) {
+			disabled(menu, "    Usage unavailable")
+		} else {
+			disabled(menu, "    Live usage unavailable")
+		}
 	}
-	if account.Snapshot != nil && time.Since(account.Snapshot.ObservedAt) > 150*time.Second {
-		disabled(menu, "    Last snapshot is stale")
+	if account.LastRefresh != nil && !account.LastRefresh.OK {
+		disabled(menu, "    Refresh failed · "+account.LastRefresh.Error)
+	} else if !account.QuotaIsCurrent(time.Now()) && account.Snapshot != nil {
+		disabled(menu, "    Last verified "+account.Snapshot.ObservedAt.Local().Format("3:04 PM")+" · not live")
 	}
 }
 

@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var relaunchInFlight = false
     private var updateAgentError: String?
     private var updateTimer: Timer?
+    private var usageTimer: Timer?
     private final class ActionBox: NSObject { let action: () -> Void; init(_ action: @escaping () -> Void) { self.action = action } }
     private var refreshMessage: String?
     init(cli: CLI) { self.cli = cli; super.init() }
@@ -32,11 +33,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cli.run(["init"], timeout: 10) { [weak self] _ in
             self?.loadStatus()
             self?.syncUpdateAgent()
+            self?.refreshUsage()
         }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkUpdate(automatic: true) }
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.refreshUsage() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkUpdate(automatic: true) }
     }
-    func applicationWillTerminate(_ notification: Notification) { updateTimer?.invalidate(); if loginProcess?.isRunning == true { loginProcess?.terminate() } }
+    func applicationWillTerminate(_ notification: Notification) { updateTimer?.invalidate(); usageTimer?.invalidate(); if loginProcess?.isRunning == true { loginProcess?.terminate() } }
     func menuWillOpen(_ menu: NSMenu) { loadStatus(); refreshUsage() }
 
     private func item(_ title: String, enabled: Bool = true, check: Bool? = nil, symbol: String? = nil, action: (() -> Void)? = nil) -> NSMenuItem {
@@ -133,18 +136,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if self.confirm("Remove \(account.title)?", "This unregisters the account. Its isolated sign-in files are retained; your normal client login is unchanged.", button: "Remove") { self.mutate(["account", "remove", account.id, "--json"]) }
         })
         header.submenu = commands; menu.addItem(header)
-        let rows = visibleQuotaWindows(for: account)
+        let current = quotaIsCurrent(for: account)
+        let rows = current ? visibleQuotaWindows(for: account) : []
         for (title, window) in rows {
             let row = label(windowText(window, title: title)); row.indentationLevel = 1
             if let reset = window.resets_at { let format = DateFormatter(); format.dateStyle = .medium; format.timeStyle = .short; row.toolTip = "Resets \(format.string(from: reset))" }
             menu.addItem(row)
         }
         if rows.isEmpty {
-            let unavailable = label("Usage unavailable"); unavailable.indentationLevel = 1
+            let unavailable = label(current ? "Usage unavailable" : (refreshing ? "Checking live usage…" : "Live usage unavailable")); unavailable.indentationLevel = 1
             menu.addItem(unavailable)
         }
-        if let snapshot = account.snapshot, Date().timeIntervalSince(snapshot.observed_at) > 150 {
-            let stale = label("Last snapshot is stale"); stale.indentationLevel = 1; menu.addItem(stale)
+        if let last = account.last_refresh, !last.ok {
+            let error = last.error ?? "Quota provider unavailable"
+            let failure = label("Refresh failed · \(String(error.prefix(75)))")
+            failure.toolTip = error
+            failure.indentationLevel = 1
+            menu.addItem(failure)
+        } else if !current, let observed = account.snapshot?.observed_at {
+            let format = DateFormatter(); format.dateStyle = .none; format.timeStyle = .short
+            let stale = label("Last verified \(format.string(from: observed)) · not live"); stale.indentationLevel = 1
+            menu.addItem(stale)
         }
     }
     private func loadStatus() {
@@ -165,7 +177,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !refreshing else { return }; refreshing = true; refreshMessage = nil; render()
         cli.run(["quota", "refresh"], timeout: 125) { [weak self] result in
             guard let self else { return }; self.refreshing = false
-            if result.status != 0 { self.refreshMessage = "Some accounts need attention · Health Check" }
+            if result.status != 0 {
+                if let outcomes = try? decodeJSON([QuotaRefreshResult].self, from: result.output),
+                   let failure = outcomes.first(where: { !$0.ok }) {
+                    self.refreshMessage = "Refresh failed · \(String((failure.error ?? "Unknown error").prefix(90)))"
+                } else {
+                    self.refreshMessage = "Refresh failed · \(String(result.error.prefix(90)))"
+                }
+            } else { self.refreshMessage = nil }
             self.loadStatus(); self.render()
         }
     }
