@@ -18,10 +18,17 @@ type Dashboard struct {
 	Preferences   Preferences   `json:"preferences"`
 }
 type Preferences struct {
-	StartAtLogin bool `json:"start_at_login"`
-	TrayAtLogin  bool `json:"tray_at_login"`
-	AutoUpdate   bool `json:"auto_update"`
+	StartAtLogin        bool `json:"start_at_login"`
+	TrayAtLogin         bool `json:"tray_at_login"`
+	AutoUpdate          bool `json:"auto_update"`
+	QuotaRefreshMinutes int  `json:"quota_refresh_minutes"`
 }
+
+// Desktop timer only; a zero interval never schedules provider reads.
+func usageRefreshDue(minutes int, last, now time.Time) bool {
+	return minutes > 0 && !last.IsZero() && now.Sub(last) >= time.Duration(minutes)*time.Minute
+}
+
 type Account struct {
 	ID          string              `json:"id"`
 	Email       string              `json:"email"`

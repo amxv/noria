@@ -48,9 +48,9 @@ func dashboard(home string) (map[string]any, error) {
 	v["address"] = c.Listen
 	v["integrations"] = views
 	v["client_roots"] = nativeRoots()
-	v["preferences"] = map[string]bool{"start_at_login": c.StartAtLogin, "menubar_at_login": c.MenuBarAtLogin, "auto_update": c.AutoUpdate}
+	v["preferences"] = map[string]any{"start_at_login": c.StartAtLogin, "menubar_at_login": c.MenuBarAtLogin, "auto_update": c.AutoUpdate, "quota_refresh_minutes": c.QuotaRefreshMinutes}
 	if runtime.GOOS != "darwin" {
-		v["preferences"].(map[string]bool)["tray_at_login"] = c.MenuBarAtLogin
+		v["preferences"].(map[string]any)["tray_at_login"] = c.MenuBarAtLogin
 	}
 	v["observed_at"] = time.Now()
 	refreshes := readQuotaRefreshStatus(home)

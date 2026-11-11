@@ -54,6 +54,9 @@ noria preferences start-at-login on
 noria preferences menubar-at-login on    # macOS
 noria preferences tray-at-login on        # Windows/Linux
 noria preferences auto-update on
+noria preferences quota-refresh-minutes on-open   # Default, no timed refresh
+noria preferences quota-refresh-minutes 15        # Refresh every 15 minutes
+noria preferences --json                          # Read saved interval
 noria upgrade --check
 noria upgrade
 noria menubar open                      # macOS
@@ -61,7 +64,7 @@ noria tray open                         # Windows/Linux
 noria tray quit                         # Leave routing running
 ```
 
-Change `on` to `off` to disable a preference. Upgrades wait for active requests to finish.
+Change `on` to `off` to disable a toggle preference. For usage refresh, choose `on-open` (or `0`) to refresh only when opening the menu or pressing **Refresh Usage**. Timed choices are `2`, `5`, `10`, `15`, `30`, `60`, `120`, or `180` minutes. This setting controls desktop-initiated polling, not the background router's quota checks needed for scheduling when routing is active. Upgrades wait for active requests to finish.
 
 ## Advanced options
 

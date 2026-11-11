@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/amxv/noria/internal/config"
 	"github.com/gogpu/systray"
 )
 
@@ -202,6 +203,16 @@ func (a *app) addConfigure(menu *systray.Menu, d *Dashboard) {
 		func() { a.preference("tray-at-login", !p.TrayAtLogin) })
 	addCheck(configMenu, "Start Noria at Login", p.StartAtLogin, !a.mutationBusy,
 		func() { a.preference("start-at-login", !p.StartAtLogin) })
+	refreshMenu := systray.NewMenu()
+	for _, minutes := range config.QuotaRefreshIntervals {
+		title := fmt.Sprintf("Every %d Minutes", minutes)
+		if minutes == 0 {
+			title = "On Menu Open Only (Default)"
+		}
+		addCheck(refreshMenu, title, p.QuotaRefreshMinutes == minutes, !a.mutationBusy,
+			func() { a.mutation("preferences", "quota-refresh-minutes", fmt.Sprint(minutes), "--json") })
+	}
+	configMenu.AddSubmenu("Usage Auto-Refresh", refreshMenu)
 	addCheck(configMenu, "Automatically Update", p.AutoUpdate, !a.mutationBusy,
 		func() { a.preference("auto-update", !p.AutoUpdate) })
 	updateTitle := "Check for Updates…"

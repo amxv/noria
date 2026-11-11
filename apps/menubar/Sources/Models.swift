@@ -49,6 +49,15 @@ struct Preferences: Decodable {
     let start_at_login: Bool
     let menubar_at_login: Bool
     let auto_update: Bool
+    // Older CLI status fixtures and installations omit this field. Zero
+    // means refresh only when the user opens the menu or explicitly requests.
+    let quota_refresh_minutes: Int?
+    var quotaRefreshMinutes: Int { quota_refresh_minutes ?? 0 }
+}
+let quotaRefreshIntervals = [0, 2, 5, 10, 15, 30, 60, 120, 180]
+func usageRefreshPeriod(minutes: Int) -> TimeInterval? {
+    guard minutes > 0, quotaRefreshIntervals.contains(minutes) else { return nil }
+    return TimeInterval(minutes * 60)
 }
 struct ClientRoot: Decodable { let provider: String; let root: String }
 struct ClientIntegration: Decodable {

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "version": "0.4.3",
   "running": true,
-  "preferences": {"start_at_login": true, "menubar_at_login": true, "auto_update": true},
+  "preferences": {"start_at_login": true, "menubar_at_login": true, "auto_update": true, "quota_refresh_minutes": 15},
   "client_roots": [],
   "integrations": [],
   "accounts": [

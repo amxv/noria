@@ -183,15 +183,15 @@ func TestClaudeFableWeeklyWindowFromOAuthLimits(t *testing.T) {
 }
 
 func TestClaudeLiveCountersSupersedeLegacyCachedCounters(t *testing.T) {
-	// Mirrors the observed discrepancy: legacy 7/6/11 used vs live 0/12/23.
+	// Synthetic counters ensure newer limits[] values override legacy fields.
 	raw := `{"rate_limits_available":true,"rate_limits":{
-"five_hour":{"utilization":7,"resets_at":"2026-11-11T11:29:59Z"},
-"seven_day":{"utilization":6,"resets_at":"2026-11-15T15:59:59Z"},
-"seven_day_fable":{"utilization":11,"resets_at":"2026-11-15T15:59:59Z"},
+"five_hour":{"utilization":31,"resets_at":"2026-11-11T11:29:59Z"},
+"seven_day":{"utilization":44,"resets_at":"2026-11-15T15:59:59Z"},
+"seven_day_fable":{"utilization":57,"resets_at":"2026-11-15T15:59:59Z"},
 "limits":[
-{"kind":"session","group":"session","percent":0,"resets_at":"2026-11-11T21:59:59Z"},
-{"kind":"weekly_all","group":"weekly","percent":12,"resets_at":"2026-11-15T15:59:59Z"},
-{"kind":"weekly_scoped","group":"weekly","percent":23,"resets_at":"2026-11-15T15:59:59Z","scope":{"model":{"display_name":"Fable"}}}]
+{"kind":"session","group":"session","percent":9,"resets_at":"2026-11-11T21:59:59Z"},
+{"kind":"weekly_all","group":"weekly","percent":18,"resets_at":"2026-11-15T15:59:59Z"},
+{"kind":"weekly_scoped","group":"weekly","percent":27,"resets_at":"2026-11-15T15:59:59Z","scope":{"model":{"display_name":"Fable"}}}]
 }}`
 	s, err := parseClaude("a", []byte(raw), time.Now())
 	if err != nil || len(s.Windows) != 3 {
@@ -200,7 +200,7 @@ func TestClaudeLiveCountersSupersedeLegacyCachedCounters(t *testing.T) {
 	for _, want := range []struct {
 		name  string
 		value float64
-	}{{"five_hour", 0}, {"seven_day", 12}, {"seven_day_fable", 23}} {
+	}{{"five_hour", 9}, {"seven_day", 18}, {"seven_day_fable", 27}} {
 		found := false
 		for _, w := range s.Windows {
 			if w.Name == want.name && w.Used != nil && *w.Used == want.value {

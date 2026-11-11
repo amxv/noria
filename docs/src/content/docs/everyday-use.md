@@ -11,9 +11,11 @@ After setup, Noria stays out of your way. Just open Codex or Claude Code normall
 
 Click the **N** icon to see your accounts, remaining allowance, and reset times. Opening the menu refreshes usage in the background. Only providers you've added are shown, and a quota window appears only if the provider reports it—for example, Codex plans without a five-hour limit won't show an empty five-hour row.
 
-macOS uses the native Swift menu bar. Windows and Linux use a Go tray app (`noria tray open`); it launches automatically on installation, starts at login by default, and reopens after upgrades. Its usage updates periodically while the app is open. On Ubuntu Desktop, KDE Plasma, and Linux Mint Cinnamon, the tray normally needs no additional setup. Other GNOME desktops may need the AppIndicator extension. Install `zenity` or `kdialog` for confirmation, alias, and folder-picker dialogs.
+macOS uses the native Swift menu bar. Windows and Linux use a Go tray app (`noria tray open`); it launches automatically on installation, starts at login by default, and reopens after upgrades. **Automatic desktop usage refresh is off by default**: opening the menu fetches live usage, but leaving the app open does not continuously poll the provider. On Ubuntu Desktop, KDE Plasma, and Linux Mint Cinnamon, the tray normally needs no additional setup. Other GNOME desktops may need the AppIndicator extension. Install `zenity` or `kdialog` for confirmation, alias, and folder-picker dialogs.
 
-The main menu stays focused on account usage, **Start/Stop**, and **Refresh Usage**. Under **Configure**, you'll find **Configure Codex**, **Configure Claude Code**, account additions, Health Check, login preferences, updates, and documentation. To relogin, rename, or disable an existing account, use its submenu.
+The main menu stays focused on account usage, **Start/Stop**, and **Refresh Usage**. Under **Configure**, you'll find **Usage Auto-Refresh**, **Configure Codex**, **Configure Claude Code**, account additions, Health Check, login preferences, updates, and documentation. To relogin, rename, or disable an existing account, use its submenu.
+
+Choose **Configure → Usage Auto-Refresh → On Menu Open Only (Default)** for no scheduled UI refresh, or select **Every 2, 5, 10, 15, 30, 60, 120, or 180 Minutes**. Any setting can be overridden by opening the menu or clicking **Refresh Usage**. Routing still performs its own quota checks when the Noria service is running to keep account selection reliable; this preference controls the desktop application's independent polling.
 
 Quitting the menu bar/tray app **does not** stop the background service.
 
@@ -44,6 +46,8 @@ noria preferences start-at-login on
 noria preferences menubar-at-login on    # macOS
 noria preferences tray-at-login on        # Windows and Linux
 noria preferences auto-update on
+noria preferences quota-refresh-minutes on-open  # Default
+noria preferences quota-refresh-minutes 30       # Optional schedule
 ```
 
 Use `off` to disable a preference.

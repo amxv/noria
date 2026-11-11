@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var updateAgentError: String?
     private var updateTimer: Timer?
     private var usageTimer: Timer?
+    private var configuredUsageRefreshMinutes: Int?
     private final class ActionBox: NSObject { let action: () -> Void; init(_ action: @escaping () -> Void) { self.action = action } }
     private var refreshMessage: String?
     init(cli: CLI) { self.cli = cli; super.init() }
@@ -33,10 +34,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cli.run(["init"], timeout: 10) { [weak self] _ in
             self?.loadStatus()
             self?.syncUpdateAgent()
-            self?.refreshUsage()
         }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkUpdate(automatic: true) }
-        usageTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.refreshUsage() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.checkUpdate(automatic: true) }
     }
     func applicationWillTerminate(_ notification: Notification) { updateTimer?.invalidate(); usageTimer?.invalidate(); if loginProcess?.isRunning == true { loginProcess?.terminate() } }
@@ -107,6 +106,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let prefs = dashboard?.preferences
         configureMenu.addItem(item("Launch Menu Bar at Login", enabled: !mutationInFlight, check: prefs?.menubar_at_login ?? false) { [weak self] in self?.setPreference("menubar-at-login", enabled: !(prefs?.menubar_at_login ?? false)) })
         configureMenu.addItem(item("Start Noria at Login", enabled: !mutationInFlight, check: prefs?.start_at_login ?? false) { [weak self] in self?.setPreference("start-at-login", enabled: !(prefs?.start_at_login ?? false)) })
+        let refreshMenu = NSMenu(); refreshMenu.autoenablesItems = false
+        for minutes in quotaRefreshIntervals {
+            let title = minutes == 0 ? "On Menu Open Only (Default)" : "Every \(minutes) Minutes"
+            refreshMenu.addItem(item(title, enabled: !mutationInFlight,
+                check: (prefs?.quotaRefreshMinutes ?? 0) == minutes) { [weak self] in
+                self?.mutate(["preferences", "quota-refresh-minutes", String(minutes), "--json"])
+            })
+        }
+        let refreshSetting = item("Usage Auto-Refresh")
+        refreshSetting.submenu = refreshMenu
+        configureMenu.addItem(refreshSetting)
         configureMenu.addItem(item("Automatically Update", enabled: !mutationInFlight, check: prefs?.auto_update ?? false) { [weak self] in self?.setPreference("auto-update", enabled: !(prefs?.auto_update ?? false)) })
         if updateAgentError != nil && prefs?.auto_update == true {
             configureMenu.addItem(item("Repair Automatic Updates…") { [weak self] in self?.syncUpdateAgent() })
@@ -164,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cli.run(["status", "--json"], timeout: 8) { [weak self] result in
             guard let self else { return }; self.statusInFlight = false
             if result.status == 0, let state = try? decodeJSON(Dashboard.self, from: result.output), state.schema_version == 1 { self.dashboard = state
+                self.configureUsageTimer(minutes: state.preferences.quotaRefreshMinutes)
                 if let plistData = try? Data(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")),
                    let plist = (try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil)) as? [String: Any],
                    let installed = plist["NoriaVersion"] as? String,
@@ -171,6 +182,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                    installed == state.version, installed != loaded, !self.updateInFlight { self.restartMenu(); return }
             }
             self.render()
+        }
+    }
+    // The CLI is the only settings store. An interval change picked up from
+    // status immediately invalidates the previous timer; zero disables it.
+    private func configureUsageTimer(minutes: Int) {
+        guard configuredUsageRefreshMinutes != minutes else { return }
+        configuredUsageRefreshMinutes = minutes
+        usageTimer?.invalidate()
+        usageTimer = nil
+        guard let seconds = usageRefreshPeriod(minutes: minutes) else { return }
+        usageTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
+            self?.refreshUsage()
         }
     }
     private func refreshUsage() {

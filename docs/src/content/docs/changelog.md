@@ -5,9 +5,15 @@ order: 11
 category: Reference
 ---
 
+## 0.4.5 · November 11, 2026
+
+- Added a configurable usage-refresh interval to the CLI and desktop Configure menus. **On menu open only** is now the default, without a startup or background timer-driven UI refresh. Optional automatic intervals are 2, 5, 10, 15, 30, 60, 120, and 180 minutes.
+- The selected interval persists per Noria installation and is applied immediately by the macOS menu bar and Windows/Linux tray, without altering routing or update preferences. Manual refresh and refresh-on-open remain available at every interval.
+- Removed account-specific utilization examples from previous release notes and replaced them with a general description. Expanded coverage for refresh settings, legacy configuration defaults, invalid choices, and timer disablement.
+
 ## 0.4.4 · November 11, 2026
 
-- Fixed inaccurate Claude subscription readings by preferring the live authenticated OAuth usage endpoint and its current `limits[]` session, weekly, and Fable counters over legacy/cached values. This corrects the observed mismatch between Noria's stale 7%/6%/11% used and the Claude dashboard's 0%/12%/23% used.
+- Fixed inaccurate Claude subscription readings by preferring the live authenticated OAuth usage endpoint and its current `limits[]` session, weekly, and Fable counters over legacy/cached values.
 - Expired or revoked isolated Claude OAuth access tokens now refresh automatically during quota checks, without requiring another login or sending a model prompt. Failed live reads are reported rather than silently replacing current readings with old native counters.
 - The macOS menu bar now refreshes on launch, on menu open, and every two minutes. The Windows/Linux tray also refreshes on startup and every two minutes. Both hide stale or failed percentages instead of presenting them as live usage.
 - Saved per-account refresh outcomes now explain the exact quota failure in account menus and Health Check. An intentionally stopped router is no longer reported as a health failure; provider status is checked independently. Added regression coverage for credential rotation, live-versus-legacy counters, diagnostic persistence, and stale-data visibility.
@@ -16,7 +22,7 @@ category: Reference
 
 - Added the **Fable Week** usage meter and reset countdown to Noria's macOS menu bar and Windows/Linux tray. It appears only for Claude accounts whose authenticated usage response actually includes the Fable weekly bucket, including temporary promotions; accounts without that bucket keep their existing quota rows unchanged.
 - Updated Claude quota collection to recognize Fable's model-scoped weekly limit from native Claude Code or the read-only OAuth `limits[]` response. Noria preserves native general quotas when discovering Fable via OAuth, never infers limits from a plan name, and does not make a model request or use a promotional reset to read the meter.
-- Added tests for Fable at 100% remaining, optional and absent limits, malformed provider data, fallback failures, and menu visibility.
+- Added tests for zero utilization, optional and absent Fable limits, malformed provider data, fallback failures, and menu visibility.
 
 ## 0.4.2 · October 28, 2026
 

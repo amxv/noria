@@ -70,6 +70,21 @@ if CommandLine.arguments.contains("--validate-quota-freshness") {
     print("Native menu hides stale and failed quota data instead of presenting it as live")
     exit(0)
 }
+if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--validate-refresh-settings" {
+    do {
+        let updated = try decodeJSON(Dashboard.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+        let legacy = try decodeJSON(Dashboard.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[3])))
+        guard updated.preferences.quotaRefreshMinutes == 15,
+              legacy.preferences.quotaRefreshMinutes == 0,
+              quotaRefreshIntervals == [0, 2, 5, 10, 15, 30, 60, 120, 180],
+              usageRefreshPeriod(minutes: 0) == nil,
+              usageRefreshPeriod(minutes: 15) == 900,
+              usageRefreshPeriod(minutes: 180) == 10800,
+              usageRefreshPeriod(minutes: 3) == nil else { exit(1) }
+        print("Native menu refresh preferences: legacy default, allowed intervals and disabled timer passed")
+        exit(0)
+    } catch { fputs("Invalid refresh preference fixture: \(error.localizedDescription)\n", stderr); exit(1) }
+}
 let home = selectedHome()
 do { try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
 catch { fputs("Cannot open the Noria private home.\n", stderr); exit(1) }

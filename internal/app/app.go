@@ -142,7 +142,7 @@ Commands:
   start | stop | restart       background routing; stop restores direct settings
   integrate codex|claude        preview and install persistent client routing
   integrations [--json]         inspect configured client profiles
-  preferences [key on|off]      login and automatic update settings
+  preferences [key value]       login, automatic updates and usage refresh
   menubar open|install          native macOS menu bar
   tray open|quit                native Windows/Linux tray app
   upgrade [--check]             verified CLI and menu bar upgrades

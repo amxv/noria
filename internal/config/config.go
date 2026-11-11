@@ -25,7 +25,23 @@ type Config struct {
 	StartAtLogin   bool            `json:"start_at_login"`
 	MenuBarAtLogin bool            `json:"menubar_at_login"`
 	AutoUpdate     bool            `json:"auto_update"`
-	ToolPath       string          `json:"tool_path,omitempty"`
+	// Zero means refresh only when the user opens the menu or explicitly asks.
+	// An omitted field in an older config intentionally defaults to zero.
+	QuotaRefreshMinutes int    `json:"quota_refresh_minutes"`
+	ToolPath            string `json:"tool_path,omitempty"`
+}
+
+// These are the only supported automatic usage polling intervals. The
+// zero value is the default and disables timer-driven frontend refreshes.
+var QuotaRefreshIntervals = [...]int{0, 2, 5, 10, 15, 30, 60, 120, 180}
+
+func ValidQuotaRefreshMinutes(minutes int) bool {
+	for _, allowed := range QuotaRefreshIntervals {
+		if minutes == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func Home() (string, error) {
@@ -121,6 +137,9 @@ func Load(home string) (Config, error) {
 	}
 	if e = ValidateListen(c.Listen); e != nil {
 		return c, e
+	}
+	if !ValidQuotaRefreshMinutes(c.QuotaRefreshMinutes) {
+		return c, fmt.Errorf("invalid quota refresh interval %d minutes", c.QuotaRefreshMinutes)
 	}
 	ids := map[string]bool{}
 	for _, a := range c.Accounts {

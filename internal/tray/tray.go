@@ -18,19 +18,21 @@ import (
 )
 
 type app struct {
-	cli            CLI
-	tray           *systray.SystemTray
-	version        string
-	mu             sync.Mutex
-	dashboard      *Dashboard
-	statusBusy     bool
-	mutationBusy   bool
-	quotaBusy      bool
-	loginCancel    context.CancelFunc
-	updateBusy     bool
-	refreshMessage string
-	closed         chan struct{}
-	stopOnce       sync.Once
+	cli               CLI
+	tray              *systray.SystemTray
+	version           string
+	mu                sync.Mutex
+	dashboard         *Dashboard
+	statusBusy        bool
+	mutationBusy      bool
+	quotaBusy         bool
+	loginCancel       context.CancelFunc
+	updateBusy        bool
+	refreshMessage    string
+	lastQuotaPoll     time.Time
+	lastQuotaInterval int
+	closed            chan struct{}
+	stopOnce          sync.Once
 }
 
 func Run(home, version string) error {
@@ -56,11 +58,11 @@ func Run(home, version string) error {
 	// A quit request written while no tray was running must not unexpectedly
 	// terminate the next GUI launch.
 	_ = os.Remove(filepath.Join(cli.Home, "tray-control.json"))
-	a := &app{cli: cli, version: version, closed: make(chan struct{})}
+	a := &app{cli: cli, version: version, closed: make(chan struct{}), lastQuotaInterval: -1}
 	a.tray = systray.New()
 	a.tray.SetAppName("Noria").SetIcon(iconPNG(false)).SetTooltip("Noria · loading").SetMenu(a.buildMenu()).Show()
-	a.tray.OnClick(func() { a.loadStatus() })
-	a.tray.OnRightClick(func() { a.loadStatus() })
+	a.tray.OnClick(func() { a.loadStatus(); a.refreshQuota() })
+	a.tray.OnRightClick(func() { a.loadStatus(); a.refreshQuota() })
 	go a.background()
 	defer a.quit()
 	return a.tray.Run()
@@ -73,11 +75,10 @@ func (a *app) quit() {
 func (a *app) background() {
 	a.loadStatus()
 	a.syncUpdateAgent()
-	go a.refreshQuota()
 	// Keep the menu useful even when Linux's AppIndicator host doesn't emit an
-	// open-menu event. Live refreshes do not send model prompts.
+	// open-menu event. No automatic provider reads occur by default.
 	statusTick := time.NewTicker(30 * time.Second)
-	quotaTick := time.NewTicker(2 * time.Minute)
+	quotaTick := time.NewTicker(15 * time.Second)
 	updateTick := time.NewTicker(time.Hour)
 	controlTick := time.NewTicker(time.Second)
 	defer statusTick.Stop()
@@ -93,7 +94,7 @@ func (a *app) background() {
 		case <-statusTick.C:
 			a.loadStatus()
 		case <-quotaTick.C:
-			a.refreshQuota()
+			a.autoRefreshIfDue()
 		case <-updateTick.C:
 			a.checkUpdate(true)
 		case <-check.C:
@@ -101,6 +102,24 @@ func (a *app) background() {
 		case <-controlTick.C:
 			a.checkControl()
 		}
+	}
+}
+
+func (a *app) autoRefreshIfDue() {
+	a.mu.Lock()
+	minutes := 0
+	if a.dashboard != nil {
+		minutes = a.dashboard.Preferences.QuotaRefreshMinutes
+	}
+	now := time.Now()
+	if minutes != a.lastQuotaInterval {
+		a.lastQuotaInterval = minutes
+		a.lastQuotaPoll = now // Arm from the saved preference, not from launch.
+	}
+	due := !a.quotaBusy && usageRefreshDue(minutes, a.lastQuotaPoll, now)
+	a.mu.Unlock()
+	if due {
+		a.refreshQuota()
 	}
 }
 
@@ -200,6 +219,7 @@ func (a *app) refreshQuota() {
 		return
 	}
 	a.quotaBusy = true
+	a.lastQuotaPoll = time.Now()
 	a.refreshMessage = ""
 	a.renderLocked()
 	a.mu.Unlock()

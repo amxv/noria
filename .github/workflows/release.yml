@@ -110,6 +110,7 @@ jobs:
             stage/Noria.app/Contents/MacOS/noria-menubar --validate-compact-status-json apps/menubar/Tests/compact-status.json
             stage/Noria.app/Contents/MacOS/noria-menubar --validate-fable-status-json apps/menubar/Tests/fable-status.json
             stage/Noria.app/Contents/MacOS/noria-menubar --validate-quota-freshness
+            stage/Noria.app/Contents/MacOS/noria-menubar --validate-refresh-settings apps/menubar/Tests/fable-status.json apps/menubar/Tests/compact-status.json
           fi
           cp LICENSE THIRD_PARTY_NOTICES.md stage/
           COPYFILE_DISABLE=1 tar -czf "dist/noria_darwin_${ARCH}.tar.gz" -C stage noria Noria.app LICENSE THIRD_PARTY_NOTICES.md
