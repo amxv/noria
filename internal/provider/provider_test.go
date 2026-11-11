@@ -161,6 +161,65 @@ func TestClaudePartialScopedAndISOOffset(t *testing.T) {
 	}
 }
 
+func TestClaudeFableWeeklyWindowFromOAuthLimits(t *testing.T) {
+	// Fable is in limits[] rather than the older seven_day_fable key. The
+	// endpoint may include billing metadata and unrelated model quotas.
+	raw := `{"rate_limits_available":true,"rate_limits":{
+"five_hour":{"utilization":3,"resets_at":null},
+"seven_day":{"utilization":0,"resets_at":"2026-11-15T15:59:59Z"},
+"limits":[
+ {"kind":"session","group":"session","percent":3,"scope":null,"resets_at":null},
+ {"kind":"weekly_scoped","group":"weekly","percent":15,"scope":{"model":{"display_name":"Sonnet"}},"resets_at":null},
+ {"kind":"weekly_scoped","group":"weekly","percent":0,"is_active":false,"scope":{"model":{"id":null,"display_name":"Fable"}},"resets_at":"2026-11-15T15:59:59.519837+00:00"}
+],"extra_usage":{"is_enabled":false},"weekly_scoped_shares":{"unknown":"ignored"}}}`
+	s, err := parseClaude("test", []byte(raw), time.Now())
+	if err != nil || len(s.Windows) != 3 || !hasClaudeFableWindow(s) {
+		t.Fatalf("optional Fable window was lost: %+v %v", s, err)
+	}
+	w := s.Windows[2]
+	if w.Model != "fable" || w.Name != "seven_day_fable" || w.LimitID != "seven_day_fable" || w.Duration != 7*24*time.Hour || w.Used == nil || *w.Used != 0 || w.ResetsAt == nil || !w.ResetsAt.Equal(time.Date(2026, 11, 15, 15, 59, 59, 519837000, time.UTC)) {
+		t.Fatalf("incorrect Fable usage or reset: %+v", w)
+	}
+}
+
+func TestClaudeFableOnlyWhenServerReportsIt(t *testing.T) {
+	for _, raw := range []string{
+		`{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":22,"resets_at":null}}}`,
+		`{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":22,"resets_at":null},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":0,"scope":{"model":{"display_name":"Sonnet"}}}]}}`,
+		`{"rate_limits_available":true,"rate_limits":{"seven_day":{"utilization":22,"resets_at":null},"limits":[]}}`,
+	} {
+		s, err := parseClaude("test", []byte(raw), time.Now())
+		if err != nil || len(s.Windows) != 1 || hasClaudeFableWindow(s) {
+			t.Fatalf("Fable quota was inferred without a server-reported bucket: %+v %v", s, err)
+		}
+	}
+}
+
+func TestClaudeFableNativeModelScopedAndDuplicatePrecedence(t *testing.T) {
+	raw := `{"rate_limits_available":true,"rate_limits":{
+"seven_day_fable":{"utilization":51,"resets_at":null},
+"model_scoped":[{"display_name":"Fable 5.2","utilization":24,"resets_at":"2026-11-15T15:59:59Z"},{"display_name":"Opus","utilization":30,"resets_at":null}]}}`
+	s, err := parseClaude("test", []byte(raw), time.Now())
+	if err != nil || len(s.Windows) != 1 || !hasClaudeFableWindow(s) || s.Windows[0].Used == nil || *s.Windows[0].Used != 24 {
+		t.Fatalf("native Fable bucket was not preferred over legacy: %+v %v", s, err)
+	}
+}
+
+func TestClaudeFableMalformedQuotaFailsClosed(t *testing.T) {
+	for _, fields := range []string{
+		`"percent":101,"resets_at":null`,
+		`"percent":-1,"resets_at":null`,
+		`"percent":"0","resets_at":null`,
+		`"percent":0,"resets_at":"2026-11-15T15:59:59"`,
+		`"resets_at":null`,
+	} {
+		raw := `{"rate_limits_available":true,"rate_limits":{"limits":[{"kind":"weekly_scoped","group":"weekly","scope":{"model":{"display_name":"Fable"}},` + fields + `}]}}`
+		if _, err := parseClaude("test", []byte(raw), time.Now()); err == nil {
+			t.Fatalf("accepted malformed Fable quota: %s", fields)
+		}
+	}
+}
+
 func TestCodexNativeRefreshAndCredentialIsolation(t *testing.T) {
 	m, a := fixtureProfile(t, "codex")
 	t.Setenv("GO_PROVIDER_FIXTURE", "codex")

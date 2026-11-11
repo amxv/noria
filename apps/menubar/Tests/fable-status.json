@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "version": "0.4.3",
+  "running": true,
+  "preferences": {"start_at_login": true, "menubar_at_login": true, "auto_update": true},
+  "client_roots": [],
+  "integrations": [],
+  "accounts": [
+    {
+      "id": "max-eligible",
+      "email": "max@example.com",
+      "provider": "claude",
+      "enabled": true,
+      "snapshot": {
+        "available": true,
+        "observed_at": "2026-11-11T03:30:00Z",
+        "windows": [
+          {"name": "five_hour", "duration": 18000000000000, "used_percent": 3.0, "resets_at": "2026-11-11T06:29:59Z"},
+          {"name": "seven_day", "duration": 604800000000000, "used_percent": 0.0, "resets_at": "2026-11-15T15:59:59Z"},
+          {"name": "seven_day_fable", "model": "fable", "duration": 604800000000000, "used_percent": 0.0, "resets_at": "2026-11-15T15:59:59Z"},
+          {"name": "seven_day_sonnet", "model": "sonnet", "duration": 604800000000000, "used_percent": 50.0}
+        ]
+      }
+    },
+    {
+      "id": "not-eligible",
+      "email": "no-fable@example.com",
+      "provider": "claude",
+      "enabled": true,
+      "snapshot": {
+        "available": true,
+        "observed_at": "2026-11-11T03:30:00Z",
+        "windows": [
+          {"name": "five_hour", "duration": 18000000000000, "used_percent": null},
+          {"name": "seven_day", "duration": 604800000000000, "used_percent": 20.0}
+        ]
+      }
+    },
+    {
+      "id": "codex",
+      "email": "codex@example.com",
+      "provider": "codex",
+      "enabled": true,
+      "snapshot": {
+        "available": true,
+        "observed_at": "2026-11-11T03:30:00Z",
+        "windows": [
+          {"name": "seven_day", "duration": 604800000000000, "used_percent": 5.0},
+          {"name": "seven_day_fable", "model": "fable", "duration": 604800000000000, "used_percent": 10.0}
+        ]
+      }
+    }
+  ]
+}

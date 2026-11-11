@@ -41,6 +41,20 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--validate-c
         exit(0)
     } catch { fputs("Invalid compact status fixture: \(error.localizedDescription)\n", stderr); exit(1) }
 }
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--validate-fable-status-json" {
+    do {
+        let state = try decodeJSON(Dashboard.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+        guard state.accounts.count == 3 else { exit(1) }
+        let eligible = visibleQuotaWindows(for: state.accounts[0])
+        let noFable = visibleQuotaWindows(for: state.accounts[1])
+        let codex = visibleQuotaWindows(for: state.accounts[2])
+        guard eligible.map(\.title) == ["5h", "Week", "Fable Week"],
+              windowText(eligible[2].window, title: eligible[2].title).contains("100% left"),
+              noFable.map(\.title) == ["Week"], codex.map(\.title) == ["Week"] else { exit(1) }
+        print("Native menu Fable weekly quota: eligible, absent, and unrelated accounts passed")
+        exit(0)
+    } catch { fputs("Invalid Fable status schema: \(error.localizedDescription)\n", stderr); exit(1) }
+}
 let home = selectedHome()
 do { try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
 catch { fputs("Cannot open the Noria private home.\n", stderr); exit(1) }

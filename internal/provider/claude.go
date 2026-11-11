@@ -23,21 +23,48 @@ import (
 func (m *Manager) claudeQuota(ctx context.Context, a model.Account, p string) (model.Snapshot, error) {
 	started := time.Now()
 	snapshot, err := m.claudeControlUsage(ctx, a, p, started)
-	if err != nil || len(snapshot.Windows) != 0 {
+	if err != nil || hasClaudeFableWindow(snapshot) {
 		return snapshot, err
 	}
-	// Claude Code can return rate_limits_available=true with rate_limits=null
-	// even for an authenticated Pro account. The same isolated native OAuth
-	// credential can read the provider's subscription usage endpoint directly.
-	// This is a read-only Go HTTP request, never Node, an SDK or a model turn.
+	// Claude Code can return rate_limits=null or only generic windows even when
+	// its usage endpoint reports a separate Fable weekly bucket. Read the same
+	// isolated account's OAuth usage to discover optional scoped quotas; do not
+	// infer Fable eligibility from a subscription plan. This is a read-only GET,
+	// never a model prompt, Node process, or credit-consuming reset.
 	credential, expired, err := m.readCredential(ctx, a, p)
-	if err != nil { // Unsigned-in native profiles correctly have no usage.
+	if err != nil { // Keep usable native telemetry if OAuth is unavailable.
 		return snapshot, nil
 	}
 	if expired {
+		if len(snapshot.Windows) != 0 {
+			return snapshot, nil
+		}
 		return snapshot, errors.New("Claude OAuth credential expired; sign in again")
 	}
-	return m.claudeOAuthUsage(ctx, a.ID, credential.Token, started)
+	oauth, err := m.claudeOAuthUsage(ctx, a.ID, credential.Token, started)
+	if err != nil && len(snapshot.Windows) != 0 {
+		return snapshot, nil
+	}
+	if err == nil && len(snapshot.Windows) != 0 {
+		// Preserve the native general limits; only add the optional scoped
+		// bucket discovered through OAuth.
+		for _, window := range oauth.Windows {
+			if window.Name == "seven_day_fable" && window.Model == "fable" {
+				putClaudeFableWindow(&snapshot, window)
+			}
+		}
+		return snapshot, nil
+	}
+	return oauth, err
+}
+
+func hasClaudeFableWindow(snapshot model.Snapshot) bool {
+	for _, window := range snapshot.Windows {
+		if window.Name == "seven_day_fable" && window.Model == "fable" && window.Used != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) claudeControlUsage(ctx context.Context, a model.Account, p string, started time.Time) (model.Snapshot, error) {
@@ -126,7 +153,7 @@ func (m *Manager) claudeControlUsage(ctx context.Context, a model.Account, p str
 }
 
 // claudeOAuthUsage reads the same account's provider-issued subscription
-// windows when the installed Claude binary reports null limits. No native
+// windows when the native response lacks Fable or all limits. No native
 // credentials or server error bodies are logged or exposed to callers.
 func (m *Manager) claudeOAuthUsage(ctx context.Context, id, token string, started time.Time) (model.Snapshot, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.claudeUsageURL, nil)
@@ -249,6 +276,94 @@ func parseClaude(id string, data []byte, now time.Time) (model.Snapshot, error) 
 		}
 		s.Windows = append(s.Windows, w)
 	}
+	// The OAuth API exposes the Fable weekly allowance in limits[], not in
+	// seven_day_fable. Newer native control responses may also expose it under
+	// model_scoped. Both are optional; absent means no Fable row, even if the
+	// subscriber's plan would ordinarily qualify. Prefer these scoped values
+	// over a legacy seven_day_fable field if both are present.
+	if raw := limits["model_scoped"]; !absent(raw) {
+		var items []struct {
+			DisplayName string          `json:"display_name"`
+			Utilization json.RawMessage `json:"utilization"`
+			ResetsAt    json.RawMessage `json:"resets_at"`
+		}
+		if json.Unmarshal(raw, &items) != nil {
+			return s, errors.New("invalid Claude model-scoped usage")
+		}
+		for _, item := range items {
+			if !claudeFableName(item.DisplayName) {
+				continue
+			}
+			w, err := claudeFableWindow(item.Utilization, item.ResetsAt)
+			if err != nil {
+				return s, err
+			}
+			putClaudeFableWindow(&s, w)
+		}
+	}
+	if raw := limits["limits"]; !absent(raw) {
+		var items []struct {
+			Kind     string          `json:"kind"`
+			Group    string          `json:"group"`
+			Percent  json.RawMessage `json:"percent"`
+			ResetsAt json.RawMessage `json:"resets_at"`
+			Scope    struct {
+				Model struct {
+					DisplayName string `json:"display_name"`
+				} `json:"model"`
+			} `json:"scope"`
+		}
+		if json.Unmarshal(raw, &items) != nil {
+			return s, errors.New("invalid Claude scoped limits")
+		}
+		for _, item := range items {
+			if item.Kind != "weekly_scoped" || (item.Group != "" && item.Group != "weekly") || !claudeFableName(item.Scope.Model.DisplayName) {
+				continue
+			}
+			w, err := claudeFableWindow(item.Percent, item.ResetsAt)
+			if err != nil {
+				return s, err
+			}
+			putClaudeFableWindow(&s, w)
+		}
+	}
 	s.Available = true
 	return s, nil
+}
+
+func claudeFableName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "fable" || name == "claude fable" || strings.HasPrefix(name, "fable ") || strings.HasPrefix(name, "claude fable ")
+}
+
+func claudeFableWindow(usage, resetAt json.RawMessage) (model.Window, error) {
+	w := model.Window{Name: "seven_day_fable", LimitID: "seven_day_fable", Model: "fable", Duration: 7 * 24 * time.Hour}
+	if len(usage) == 0 || len(resetAt) == 0 {
+		return w, errors.New("Claude Fable weekly usage fields missing")
+	}
+	var reset *string
+	if json.Unmarshal(usage, &w.Used) != nil || json.Unmarshal(resetAt, &reset) != nil {
+		return w, errors.New("invalid Claude Fable weekly usage")
+	}
+	if w.Used != nil && (*w.Used < 0 || *w.Used > 100) {
+		return w, errors.New("Claude Fable utilization outside 0..100")
+	}
+	if reset != nil {
+		v, err := time.Parse(time.RFC3339Nano, *reset)
+		if err != nil {
+			return w, errors.New("Claude Fable reset must be timezone-aware ISO timestamp")
+		}
+		w.ResetsAt = &v
+	}
+	return w, nil
+}
+
+func putClaudeFableWindow(snapshot *model.Snapshot, window model.Window) {
+	for i := range snapshot.Windows {
+		if snapshot.Windows[i].Name == window.Name && snapshot.Windows[i].Model == window.Model {
+			snapshot.Windows[i] = window
+			return
+		}
+	}
+	snapshot.Windows = append(snapshot.Windows, window)
 }

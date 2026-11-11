@@ -5,6 +5,12 @@ order: 11
 category: Reference
 ---
 
+## 0.4.3 · November 11, 2026
+
+- Added the **Fable Week** usage meter and reset countdown to Noria's macOS menu bar and Windows/Linux tray. It appears only for Claude accounts whose authenticated usage response actually includes the Fable weekly bucket, including temporary promotions; accounts without that bucket keep their existing quota rows unchanged.
+- Updated Claude quota collection to recognize Fable's model-scoped weekly limit from native Claude Code or the read-only OAuth `limits[]` response. Noria preserves native general quotas when discovering Fable via OAuth, never infers limits from a plan name, and does not make a model request or use a promotional reset to read the meter.
+- Added tests for Fable at 100% remaining, optional and absent limits, malformed provider data, fallback failures, and menu visibility.
+
 ## 0.4.2 · October 28, 2026
 
 - Increased the bounded HTTP and WebSocket native request body limit from 16 MiB to 256 MiB to support image-heavy conversation history in Codex and Claude sessions.

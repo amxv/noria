@@ -70,8 +70,12 @@ func claudeFixture() {
 			if mode == "null_limits" {
 				payload = map[string]any{"rate_limits_available": true, "rate_limits": nil, "subscription_type": "pro"}
 			} else {
+				limits := map[string]any{"five_hour": map[string]any{"utilization": 12.5, "resets_at": nil}, "seven_day": map[string]any{"utilization": 45.0, "resets_at": nil}}
+				if mode == "model_scoped" {
+					limits["model_scoped"] = []map[string]any{{"display_name": "Fable", "utilization": 0, "resets_at": "2026-11-15T15:59:59Z"}}
+				}
 				payload = map[string]any{"rate_limits_available": true,
-					"rate_limits": map[string]any{"five_hour": map[string]any{"utilization": 12.5, "resets_at": nil}, "seven_day": map[string]any{"utilization": 45.0, "resets_at": nil}},
+					"rate_limits": limits,
 					"secret":      "must-not-be-returned"}
 			}
 		}
@@ -114,6 +118,63 @@ func TestClaudeNullNativeUsageReadsSameProfileOAuthWithoutNode(t *testing.T) {
 	trace, err := os.ReadFile(filepath.Join(a.Profile, "claude-calls"))
 	if err != nil || strings.TrimSpace(string(trace)) != "initialize\nget_usage" {
 		t.Fatalf("native CLI was not consulted first: %q %v", trace, err)
+	}
+}
+
+func TestClaudeGenericNativeUsageDiscoversOptionalOAuthFable(t *testing.T) {
+	m, a := fixtureProfile(t, "claude")
+	m.claudeCommand = os.Args[0]
+	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
+	// Native reports general quotas but not the model-scoped Fable window.
+	if err := os.WriteFile(filepath.Join(a.Profile, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"fixture-access","expiresAt":4102444800000}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer fixture-access" {
+			t.Error("wrong isolated OAuth token")
+		}
+		_, _ = io.WriteString(w, `{"five_hour":{"utilization":3,"resets_at":null},"seven_day":{"utilization":0,"resets_at":null},"limits":[{"kind":"weekly_scoped","group":"weekly","percent":0,"resets_at":"2026-11-15T15:59:59Z","scope":{"model":{"display_name":"Fable"}}}]}`)
+	}))
+	defer upstream.Close()
+	m.claudeUsageURL = upstream.URL
+	s, err := m.Refresh(context.Background(), a)
+	if err != nil || calls != 1 || !s.Available || len(s.Windows) != 3 || !hasClaudeFableWindow(s) {
+		t.Fatalf("missing optional Fable usage when native only reports generic windows: %+v %v calls=%d", s, err, calls)
+	}
+	if s.Windows[0].Used == nil || *s.Windows[0].Used != 12.5 || s.Windows[1].Used == nil || *s.Windows[1].Used != 45 {
+		t.Fatalf("OAuth Fable discovery changed the native general windows: %+v", s.Windows)
+	}
+}
+
+func TestClaudeNativeFableDoesNotRequireOAuth(t *testing.T) {
+	m, a := fixtureProfile(t, "claude")
+	m.claudeCommand = os.Args[0]
+	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
+	t.Setenv("GO_CLAUDE_FIXTURE_MODE", "model_scoped")
+	s, err := m.Refresh(context.Background(), a)
+	if err != nil || !s.Available || len(s.Windows) != 3 || !hasClaudeFableWindow(s) {
+		t.Fatalf("Fable reported by native control should need no OAuth credentials: %+v %v", s, err)
+	}
+}
+
+func TestClaudeOptionalOAuthFailureKeepsNativeUsage(t *testing.T) {
+	m, a := fixtureProfile(t, "claude")
+	m.claudeCommand = os.Args[0]
+	t.Setenv("GO_PROVIDER_FIXTURE", "claude")
+	if err := os.WriteFile(filepath.Join(a.Profile, ".credentials.json"), []byte(`{"claudeAiOauth":{"accessToken":"fixture-access","expiresAt":4102444800000}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		_, _ = io.WriteString(w, `{"secret":"should-not-be-logged"}`)
+	}))
+	defer upstream.Close()
+	m.claudeUsageURL = upstream.URL
+	s, err := m.Refresh(context.Background(), a)
+	if err != nil || !s.Available || len(s.Windows) != 2 || hasClaudeFableWindow(s) {
+		t.Fatalf("optional Fable detection must not break existing quota view: %+v %v", s, err)
 	}
 }
 

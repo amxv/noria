@@ -91,21 +91,31 @@ func ParseDashboard(data []byte) (Dashboard, error) {
 	return d, nil
 }
 
-// Match the Swift menu's supported quota windows exactly. Model-scoped and
-// unreported windows never appear as invented usage percentages.
+// Match Swift's quota rows. Show the optional Fable weekly bucket only when
+// the Claude account reports it; a plan name is not evidence of eligibility.
 func (a Account) VisibleWindows() []QuotaRow {
 	if a.Snapshot == nil {
 		return nil
 	}
-	rows := make([]QuotaRow, 0, 2)
-	for _, target := range []struct {
+	rows := make([]QuotaRow, 0, 3)
+	targets := []struct {
 		label    string
 		duration time.Duration
+		model    string
 	}{
-		{"5h", 5 * time.Hour}, {"Week", 7 * 24 * time.Hour},
-	} {
+		{"5h", 5 * time.Hour, ""}, {"Week", 7 * 24 * time.Hour, ""},
+	}
+	if a.Provider == "claude" {
+		targets = append(targets, struct {
+			label    string
+			duration time.Duration
+			model    string
+		}{"Fable Week", 7 * 24 * time.Hour, "fable"})
+	}
+	for _, target := range targets {
 		for _, w := range a.Snapshot.Windows {
-			if w.Duration != int64(target.duration) || w.Model != "" || w.UsedPercent == nil ||
+			if w.Duration != int64(target.duration) || w.Model != target.model ||
+				(target.model == "fable" && w.Name != "seven_day_fable") || w.UsedPercent == nil ||
 				math.IsNaN(*w.UsedPercent) || math.IsInf(*w.UsedPercent, 0) || *w.UsedPercent < 0 || *w.UsedPercent > 100 {
 				continue
 			}

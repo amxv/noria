@@ -45,14 +45,20 @@ struct Dashboard: Decodable {
     let integrations: [ClientIntegration]
 }
 
-// Only draw quota windows that the provider actually reports with a usable
-// percentage. Codex Pro accounts, for example, may have no five-hour window.
-// An absent window must not become a fabricated "Usage unavailable" row.
+// Only draw quota windows the provider actually reports with a usable
+// percentage. The Fable weekly bucket is optional per account (including
+// promotions), so never infer it from the subscription plan.
 func visibleQuotaWindows(for account: AccountStatus) -> [(title: String, window: QuotaWindow)] {
     let windows = account.snapshot?.windows ?? []
-    return [(Int64(18_000_000_000_000), "5h"), (Int64(604_800_000_000_000), "Week")].compactMap { duration, title in
+    var targets: [(duration: Int64, title: String, model: String)] = [
+        (18_000_000_000_000, "5h", ""),
+        (604_800_000_000_000, "Week", "")
+    ]
+    if account.provider == "claude" { targets.append((604_800_000_000_000, "Fable Week", "fable")) }
+    return targets.compactMap { duration, title, model in
         guard let window = windows.first(where: {
-            $0.duration == duration && ($0.model ?? "").isEmpty &&
+            $0.duration == duration && ($0.model ?? "") == model &&
+            (model != "fable" || $0.name == "seven_day_fable") &&
             $0.used_percent.map { $0.isFinite && $0 >= 0 && $0 <= 100 } == true
         }) else { return nil }
         return (title: title, window: window)
