@@ -24,8 +24,11 @@ type app struct {
 	mu                sync.Mutex
 	dashboard         *Dashboard
 	statusBusy        bool
+	statusPending     bool
+	quotaPending      bool
+	refreshing        map[string]bool
+	refreshFailures   []string
 	mutationBusy      bool
-	quotaBusy         bool
 	loginCancel       context.CancelFunc
 	updateBusy        bool
 	refreshMessage    string
@@ -116,7 +119,7 @@ func (a *app) autoRefreshIfDue() {
 		a.lastQuotaInterval = minutes
 		a.lastQuotaPoll = now // Arm from the saved preference, not from launch.
 	}
-	due := !a.quotaBusy && usageRefreshDue(minutes, a.lastQuotaPoll, now)
+	due := !a.quotaBusy() && usageRefreshDue(minutes, a.lastQuotaPoll, now)
 	a.mu.Unlock()
 	if due {
 		a.refreshQuota()
@@ -163,6 +166,9 @@ func (a *app) renderLocked() {
 func (a *app) loadStatus() {
 	a.mu.Lock()
 	if a.statusBusy {
+		// Another account finished mid-load; reload once more afterwards so
+		// its fresh numbers are not dropped.
+		a.statusPending = true
 		a.mu.Unlock()
 		return
 	}
@@ -176,11 +182,23 @@ func (a *app) loadStatus() {
 		}
 		a.mu.Lock()
 		a.statusBusy = false
+		pending := a.statusPending
+		a.statusPending = false
 		if err == nil {
 			a.dashboard = &dashboard
 		}
+		quota := a.quotaPending && a.dashboard != nil
+		if quota {
+			a.quotaPending = false
+		}
 		a.renderLocked()
 		a.mu.Unlock()
+		if pending {
+			a.loadStatus()
+		}
+		if quota {
+			a.refreshQuota()
+		}
 		if err == nil && dashboard.Version != a.version && a.version != "dev" && dashboard.Version != "dev" {
 			// Reopen against the newly installed binary, including automatic upgrades.
 			if _, err := a.cli.run(5*time.Second, "tray", "reopen"); err == nil {
@@ -212,29 +230,54 @@ func (a *app) mutation(args ...string) {
 	}()
 }
 
+// refreshQuota reads every account independently so a slow provider never
+// holds back another account's numbers; each finished read reloads status.
 func (a *app) refreshQuota() {
 	a.mu.Lock()
-	if a.quotaBusy {
-		a.mu.Unlock()
-		return
-	}
-	a.quotaBusy = true
-	a.lastQuotaPoll = time.Now()
-	a.refreshMessage = ""
-	a.renderLocked()
-	a.mu.Unlock()
-	go func() {
-		_, err := a.cli.run(125*time.Second, "quota", "refresh")
-		a.mu.Lock()
-		a.quotaBusy = false
-		if err != nil {
-			a.refreshMessage = "Refresh failed · check account details"
-		}
-		a.renderLocked()
+	if a.dashboard == nil {
+		// Refresh as soon as the first status load reports the accounts.
+		a.quotaPending = true
 		a.mu.Unlock()
 		a.loadStatus()
-	}()
+		return
+	}
+	if a.refreshing == nil {
+		a.refreshing = map[string]bool{}
+	}
+	if len(a.refreshing) == 0 {
+		a.refreshFailures, a.refreshMessage = nil, ""
+	}
+	targets := []string{}
+	for _, account := range a.dashboard.Accounts {
+		if (account.Enabled || account.Email != "") && !a.refreshing[account.ID] {
+			a.refreshing[account.ID] = true
+			targets = append(targets, account.ID)
+		}
+	}
+	if len(targets) > 0 {
+		a.lastQuotaPoll = time.Now()
+	}
+	a.renderLocked()
+	a.mu.Unlock()
+	for _, id := range targets {
+		go func(id string) {
+			_, err := a.cli.run(60*time.Second, "quota", "refresh", id)
+			a.mu.Lock()
+			delete(a.refreshing, id)
+			if err != nil {
+				a.refreshFailures = append(a.refreshFailures, id)
+			}
+			if len(a.refreshing) == 0 && len(a.refreshFailures) > 0 {
+				a.refreshMessage = "Refresh failed · check account details"
+			}
+			a.renderLocked()
+			a.mu.Unlock()
+			a.loadStatus()
+		}(id)
+	}
 }
+
+func (a *app) quotaBusy() bool { return len(a.refreshing) > 0 }
 
 func (a *app) authenticate(provider, id string) {
 	a.mu.Lock()

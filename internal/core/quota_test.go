@@ -2,6 +2,7 @@ package core
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -322,5 +323,30 @@ func TestScopedAccountingDoesNotChargeOtherModelFamilies(t *testing.T) {
 	update(t, s, "a", *now, w)
 	if mean := s.state.Learning["a"][windowKey(w)].Mean; mean != 2 {
 		t.Fatalf("unrelated model diluted learned scope cost: %f", mean)
+	}
+}
+
+func TestCompleteSnapshotRetiresWindowsTheProviderNoLongerReports(t *testing.T) {
+	s, now := testScheduler(t, "a")
+	update(t, s, "a", *now, window("five_hour", 16, now.Add(time.Hour), 5*time.Hour), window("seven_day", 70, now.Add(24*time.Hour), 7*24*time.Hour))
+	*now = now.Add(time.Second)
+	// A partial read keeps the unreported window.
+	update(t, s, "a", *now, window("seven_day", 72, now.Add(24*time.Hour), 7*24*time.Hour))
+	if got := len(s.state.Snapshots["a"].Windows); got != 2 {
+		t.Fatalf("partial read dropped a window: %d", got)
+	}
+	*now = now.Add(time.Second)
+	if err := s.Update(model.Snapshot{AccountID: "a", ObservedAt: *now, Available: true, Complete: true,
+		Windows: []model.Window{window("seven_day", 75, now.Add(24*time.Hour), 7*24*time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	windows := s.state.Snapshots["a"].Windows
+	if len(windows) != 1 || windows[0].Name != "seven_day" {
+		t.Fatalf("complete read kept a retired window: %+v", windows)
+	}
+	for k := range s.state.WindowObserved["a"] {
+		if strings.Contains(k, "five_hour") {
+			t.Fatal("retired window observation clock kept")
+		}
 	}
 }

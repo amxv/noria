@@ -8,8 +8,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private var statusItem: NSStatusItem!
     private var dashboard: Dashboard?
-    private var refreshing = false
+    // Each account refreshes independently, so a slow provider never holds
+    // back another account's numbers.
+    private var refreshingAccounts = Set<String>()
+    private var refreshFailures: [String] = []
+    private var refreshing: Bool { !refreshingAccounts.isEmpty }
     private var statusInFlight = false
+    private var statusReloadPending = false
+    private var usageRefreshPending = false
     private var mutationInFlight = false
     private var loginProcess: Process?
     private var updateInFlight = false
@@ -154,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(row)
         }
         if rows.isEmpty {
-            let unavailable = label(current ? "Usage unavailable" : (refreshing ? "Checking live usage…" : "Live usage unavailable")); unavailable.indentationLevel = 1
+            let unavailable = label(current ? "Usage unavailable" : (refreshingAccounts.contains(account.id) ? "Checking live usage…" : "Live usage unavailable")); unavailable.indentationLevel = 1
             menu.addItem(unavailable)
         }
         if let last = account.last_refresh, !last.ok {
@@ -170,9 +176,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     private func loadStatus() {
-        guard !statusInFlight else { return }; statusInFlight = true
+        // A reload requested mid-flight (another account finished) runs right
+        // after the current one so no account's fresh numbers are dropped.
+        guard !statusInFlight else { statusReloadPending = true; return }; statusInFlight = true
         cli.run(["status", "--json"], timeout: 8) { [weak self] result in
             guard let self else { return }; self.statusInFlight = false
+            defer {
+                if self.statusReloadPending { self.statusReloadPending = false; self.loadStatus() }
+                if self.usageRefreshPending, self.dashboard != nil { self.usageRefreshPending = false; self.refreshUsage() }
+            }
             if result.status == 0, let state = try? decodeJSON(Dashboard.self, from: result.output), state.schema_version == 1 { self.dashboard = state
                 self.configureUsageTimer(minutes: state.preferences.quotaRefreshMinutes)
                 if let plistData = try? Data(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")),
@@ -197,18 +209,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
     private func refreshUsage() {
-        guard !refreshing else { return }; refreshing = true; refreshMessage = nil; render()
-        cli.run(["quota", "refresh"], timeout: 125) { [weak self] result in
-            guard let self else { return }; self.refreshing = false
-            if result.status != 0 {
-                if let outcomes = try? decodeJSON([QuotaRefreshResult].self, from: result.output),
-                   let failure = outcomes.first(where: { !$0.ok }) {
-                    self.refreshMessage = "Refresh failed · \(String((failure.error ?? "Unknown error").prefix(90)))"
-                } else {
-                    self.refreshMessage = "Refresh failed · \(String(result.error.prefix(90)))"
+        guard let accounts = dashboard?.accounts else { usageRefreshPending = true; loadStatus(); return }
+        let targets = accounts.filter { ($0.enabled || !($0.email ?? "").isEmpty) && !refreshingAccounts.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        if refreshingAccounts.isEmpty { refreshFailures = []; refreshMessage = nil }
+        for account in targets { refreshingAccounts.insert(account.id) }
+        render()
+        for account in targets {
+            cli.run(["quota", "refresh", account.id], timeout: 60) { [weak self] result in
+                guard let self else { return }
+                self.refreshingAccounts.remove(account.id)
+                if result.status != 0 {
+                    let detail = (try? decodeJSON([QuotaRefreshResult].self, from: result.output))?.first(where: { !$0.ok })?.error ?? result.error
+                    self.refreshFailures.append("\(account.title): \(detail)")
                 }
-            } else { self.refreshMessage = nil }
-            self.loadStatus(); self.render()
+                if self.refreshingAccounts.isEmpty, let failure = self.refreshFailures.first {
+                    self.refreshMessage = "Refresh failed · \(String(failure.prefix(90)))"
+                }
+                self.loadStatus(); self.render()
+            }
         }
     }
     private func mutate(_ arguments: [String]) {

@@ -5,6 +5,13 @@ order: 11
 category: Reference
 ---
 
+## 0.4.6 · November 15, 2026
+
+- Fixed a retired Claude **5h** limit lingering in the menu bar and tray after Claude removed the session limit from an account. A complete Claude usage read now replaces the account's quota windows, so windows the provider no longer reports (including optional buckets like Fable Week) disappear instead of showing their last saved reading.
+- Partial reads from other sources still keep previously reported windows. Added regression coverage for the current Claude usage shape without a session limit.
+- Usage now refreshes each account independently when the menu opens or the auto-refresh interval fires, in both the macOS menu bar and the Windows/Linux tray. A fast account no longer waits for a slower one, and concurrent refreshes no longer block each other in the service.
+- Codex usage reads now request rate limits directly and check sign-in state only when that read fails, removing one network round trip from every Codex refresh.
+
 ## 0.4.5 · November 11, 2026
 
 - Added a configurable usage-refresh interval to the CLI and desktop Configure menus. **On menu open only** is now the default, without a startup or background timer-driven UI refresh. Optional automatic intervals are 2, 5, 10, 15, 30, 60, 120, and 180 minutes.

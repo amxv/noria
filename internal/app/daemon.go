@@ -51,22 +51,38 @@ type refreshResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// refresh reads each selected account independently. The mutex only guards
+// configuration/scheduler account sync, never network reads, so a slow
+// provider (or a concurrent per-account request) cannot delay another account.
 func (r *refresher) refresh(ctx context.Context, id string) ([]refreshResult, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	c, e := config.Load(r.home)
+	if e == nil && id != "" {
+		_, e = findAccount(c, id)
+	}
+	if e == nil {
+		e = r.s.SetAccounts(c.Accounts)
+	}
+	r.mu.Unlock()
 	if e != nil {
 		return nil, e
 	}
-	if id != "" {
-		if _, e = findAccount(c, id); e != nil {
-			return nil, e
-		}
-	}
-	if e = r.s.SetAccounts(c.Accounts); e != nil {
+	results, e := r.collect(ctx, refreshAccounts(c, id), func(_ int, snap model.Snapshot) error { return r.s.Update(snap) })
+	if e != nil {
 		return nil, e
 	}
+	r.mu.Lock()
+	if current, e := config.Load(r.home); e == nil {
+		_ = r.s.SetAccounts(current.Accounts)
+	}
+	r.mu.Unlock()
+	if err := recordQuotaRefresh(r.home, results); err != nil {
+		return results, err
+	}
+	return results, nil
+}
 
+func refreshAccounts(c config.Config, id string) []model.Account {
 	accounts := []model.Account{}
 	for _, a := range c.Accounts {
 		if id != "" && a.ID != id {
@@ -77,6 +93,12 @@ func (r *refresher) refresh(ctx context.Context, id string) ([]refreshResult, er
 		}
 		accounts = append(accounts, a)
 	}
+	return accounts
+}
+
+// collect reads provider snapshots concurrently and hands each successful
+// read to apply as soon as it arrives.
+func (r *refresher) collect(ctx context.Context, accounts []model.Account, apply func(int, model.Snapshot) error) ([]refreshResult, error) {
 	results := make([]refreshResult, len(accounts))
 	slots := make(chan struct{}, 4)
 	var group sync.WaitGroup
@@ -112,7 +134,7 @@ func (r *refresher) refresh(ctx context.Context, id string) ([]refreshResult, er
 			}
 			snap, e := r.p.Refresh(deadline, a)
 			if e == nil {
-				e = r.s.Update(snap)
+				e = apply(i, snap)
 			}
 			result := refreshResult{Account: a.ID, OK: e == nil}
 			if e != nil {
@@ -122,13 +144,6 @@ func (r *refresher) refresh(ctx context.Context, id string) ([]refreshResult, er
 		}(i, a)
 	}
 	group.Wait()
-	if current, e := config.Load(r.home); e == nil {
-		_ = r.s.SetAccounts(current.Accounts)
-	}
-	if err := recordQuotaRefresh(r.home, results); err != nil {
-		return results, err
-	}
-
 	return results, nil
 }
 

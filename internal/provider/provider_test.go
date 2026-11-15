@@ -82,9 +82,16 @@ func codexFixture() {
 				_ = os.Rename(tmp, filepath.Join(p, "auth.json"))
 			}
 			result = map[string]any{"account": map[string]string{"type": "chatgpt"}, "requiresOpenaiAuth": true}
+			if os.Getenv("GO_FIXTURE_SIGNED_OUT") == "1" {
+				result = map[string]any{"account": nil, "requiresOpenaiAuth": true}
+			}
 		case "account/rateLimits/read":
 			if string(req.Params) != "{}" {
 				os.Exit(8)
+			}
+			if os.Getenv("GO_FIXTURE_SIGNED_OUT") == "1" {
+				_ = enc.Encode(map[string]any{"id": req.ID, "error": map[string]any{"message": "auth required"}})
+				continue
 			}
 			result = map[string]any{"rateLimits": map[string]any{"primary": map[string]any{"usedPercent": 12.5, "windowDurationMins": 300}}}
 		default:
@@ -292,8 +299,10 @@ func TestCodexNativeRefreshAndCredentialIsolation(t *testing.T) {
 		t.Fatalf("control quota failed: %v", err)
 	}
 	calls, err = os.ReadFile(filepath.Join(a.Profile, "calls"))
-	if err != nil || strings.Count(string(calls), "refreshToken=true") != 1 || strings.Count(string(calls), "refreshToken=false") != 1 {
-		t.Fatalf("passive quota reads must not rotate credentials: %s (%v)", calls, err)
+	// A passive quota read goes straight to rate limits: no token rotation and
+	// no extra account/read network round trip.
+	if err != nil || strings.Count(string(calls), "refreshToken=true") != 1 || strings.Count(string(calls), "account/read") != 1 {
+		t.Fatalf("passive quota reads must not rotate credentials or re-read the account: %s (%v)", calls, err)
 	}
 	relock, err := config.Lock(a.Profile, "native")
 	if err != nil {
@@ -331,5 +340,41 @@ func TestNativeDeadlineAndCrossProcessLock(t *testing.T) {
 	defer cancel2()
 	if _, err := m.Refresh(ctx2, a); err == nil {
 		t.Fatal("cross-process lock was bypassed")
+	}
+}
+
+func TestClaudeRemovedFiveHourLimitIsCompleteRead(t *testing.T) {
+	// Live shape after Claude removed the session limit: five_hour is null and
+	// limits[] carries only weekly entries.
+	raw := `{"rate_limits_available":true,"rate_limits":{"five_hour":null,"seven_day":{"utilization":75.0,"resets_at":"2026-11-15T15:59:59.880630+00:00"},"limits":[{"kind":"weekly_all","group":"weekly","percent":75,"resets_at":"2026-11-15T15:59:59.880630+00:00","scope":null,"is_active":true},{"kind":"weekly_scoped","group":"weekly","percent":59,"resets_at":"2026-11-15T15:59:59.880781+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null},"is_active":false}]}}`
+	s, err := parseClaude("a", []byte(raw), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Available || !s.Complete {
+		t.Fatal("Claude rate_limits read must be complete so retired windows are dropped")
+	}
+	for _, w := range s.Windows {
+		if w.Name == "five_hour" {
+			t.Fatal("removed five-hour limit reported")
+		}
+	}
+	if len(s.Windows) != 2 {
+		t.Fatalf("expected weekly and Fable windows: %+v", s.Windows)
+	}
+}
+
+func TestCodexFailedRateLimitReadClassifiesSignedOut(t *testing.T) {
+	m, a := fixtureProfile(t, "codex")
+	t.Setenv("GO_PROVIDER_FIXTURE", "codex")
+	t.Setenv("GO_FIXTURE_SIGNED_OUT", "1")
+	m.codexCommand = os.Args[0]
+	s, err := m.codexQuota(context.Background(), a, a.Profile)
+	if err != nil || !s.AuthInvalid || s.Available {
+		t.Fatalf("signed-out Codex read not classified: %+v %v", s, err)
+	}
+	calls, _ := os.ReadFile(filepath.Join(a.Profile, "calls"))
+	if !strings.Contains(string(calls), "account/rateLimits/read\naccount/read\nrefreshToken=false") {
+		t.Fatalf("expected rate limits first, then a passive account check: %s", calls)
 	}
 }

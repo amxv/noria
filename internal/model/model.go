@@ -32,7 +32,11 @@ type Snapshot struct {
 	ObservedAt  time.Time `json:"observed_at"`
 	Available   bool      `json:"available"`
 	AuthInvalid bool      `json:"auth_invalid,omitempty"`
-	Windows     []Window  `json:"windows,omitempty"`
+	// Complete marks a read that lists every window the provider currently
+	// enforces. Windows absent from a complete read were removed upstream
+	// (for example, a retired five-hour limit) and must not be carried over.
+	Complete bool     `json:"complete,omitempty"`
+	Windows  []Window `json:"windows,omitempty"`
 }
 
 type Credential struct {

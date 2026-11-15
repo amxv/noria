@@ -134,10 +134,21 @@ func (s *Scheduler) Update(snapshot model.Snapshot) error {
 	}
 	// Keep independently reported windows absent from a partial read. Their
 	// original observation clocks remain separate, so they do not become fresh.
+	// A complete, available read is authoritative: a missing window was retired,
+	// so its reading, first-use clock and learned scale are dropped too.
+	retire := snapshot.Complete && snapshot.Available
 	for _, w := range oldSnapshot.Windows {
-		if !present[windowKey(w)] {
-			snapshot.Windows = append(snapshot.Windows, w)
+		k := windowKey(w)
+		if present[k] {
+			continue
 		}
+		if retire {
+			delete(observed, k)
+			delete(clocks, k)
+			delete(learned, k)
+			continue
+		}
+		snapshot.Windows = append(snapshot.Windows, w)
 	}
 	s.state.Snapshots[id] = cloneSnapshot(snapshot)
 	s.state.Learning[id], s.state.Clocks[id], s.state.Blockers[id] = learned, clocks, blocks

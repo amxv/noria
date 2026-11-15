@@ -70,10 +70,10 @@ func (a *app) buildMenu() *systray.Menu {
 	}
 	menu.AddSeparator()
 	label := "Refresh Usage"
-	if a.quotaBusy {
+	if a.quotaBusy() {
 		label = "Refreshing Usage…"
 	}
-	addAction(menu, label, !a.quotaBusy, func() { a.refreshQuota() })
+	addAction(menu, label, !a.quotaBusy(), func() { a.refreshQuota() })
 	if a.refreshMessage != "" {
 		disabled(menu, a.refreshMessage)
 	}
@@ -134,7 +134,7 @@ func (a *app) addAccount(menu *systray.Menu, account Account) {
 		disabled(menu, "    "+row.Text(time.Now()))
 	}
 	if len(rows) == 0 {
-		if a.quotaBusy {
+		if a.refreshing[account.ID] {
 			disabled(menu, "    Checking live usage…")
 		} else if account.QuotaIsCurrent(time.Now()) {
 			disabled(menu, "    Usage unavailable")

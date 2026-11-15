@@ -71,24 +71,40 @@ func (m *Manager) codexControl(ctx context.Context, a model.Account, p string, r
 	if enc.Encode(map[string]any{"method": "initialized", "params": map[string]any{}}) != nil {
 		return model.Snapshot{}, errors.New("Codex initialization failed")
 	}
-	// Passive quota reads must not rotate tokens on every poll. Only an
-	// expired credential explicitly requests the native client's refresh flow.
-	account, err := rpc("account/read", map[string]bool{"refreshToken": refreshToken})
-	if err != nil {
-		return model.Snapshot{}, err
+	readAccount := func() (model.Snapshot, bool, error) {
+		// Passive quota reads must not rotate tokens on every poll. Only an
+		// expired credential explicitly requests the native client's refresh flow.
+		account, err := rpc("account/read", map[string]bool{"refreshToken": refreshToken})
+		if err != nil {
+			return model.Snapshot{}, false, err
+		}
+		var auth struct {
+			Account  json.RawMessage `json:"account"`
+			Required bool            `json:"requiresOpenaiAuth"`
+		}
+		if json.Unmarshal(account, &auth) != nil {
+			return model.Snapshot{}, false, errors.New("invalid Codex account response")
+		}
+		if auth.Required && (len(auth.Account) == 0 || string(auth.Account) == "null") {
+			return model.Snapshot{AccountID: a.ID, ObservedAt: started, AuthInvalid: true}, true, nil
+		}
+		return model.Snapshot{}, false, nil
 	}
-	var auth struct {
-		Account  json.RawMessage `json:"account"`
-		Required bool            `json:"requiresOpenaiAuth"`
+	if refreshToken {
+		if snapshot, invalid, err := readAccount(); err != nil || invalid {
+			return snapshot, err
+		}
 	}
-	if json.Unmarshal(account, &auth) != nil {
-		return model.Snapshot{}, errors.New("invalid Codex account response")
-	}
-	if auth.Required && (len(auth.Account) == 0 || string(auth.Account) == "null") {
-		return model.Snapshot{AccountID: a.ID, ObservedAt: started, AuthInvalid: true}, nil
-	}
+	// Ask for rate limits directly: account/read is a separate network round
+	// trip, so it only runs to classify a failed read as signed out.
 	raw, err := rpc("account/rateLimits/read", map[string]any{})
 	if err != nil {
+		if refreshToken {
+			return model.Snapshot{}, err
+		}
+		if snapshot, invalid, accountErr := readAccount(); accountErr == nil && invalid {
+			return snapshot, nil
+		}
 		return model.Snapshot{}, err
 	}
 	return parseCodex(a.ID, raw, started)

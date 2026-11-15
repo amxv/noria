@@ -329,7 +329,9 @@ func parseClaude(id string, data []byte, now time.Time) (model.Snapshot, error) 
 			putClaudeWindow(&s, w)
 		}
 	}
-	s.Available = true
+	// The rate_limits object enumerates every enforced subscription window, so
+	// an absent or null window (such as a removed five-hour limit) is retired.
+	s.Available, s.Complete = true, true
 	return s, nil
 }
 

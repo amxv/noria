@@ -17,6 +17,7 @@ import (
 
 	"github.com/amxv/noria/internal/config"
 	"github.com/amxv/noria/internal/core"
+	"github.com/amxv/noria/internal/model"
 	"github.com/amxv/noria/internal/provider"
 	"github.com/amxv/noria/internal/service"
 )
@@ -137,21 +138,7 @@ func quota(home string, args []string, out, errOut io.Writer) error {
 		}
 		return nil
 	}
-	unlock, e := service.Guard(home, "daemon")
-	if e != nil {
-		return fmt.Errorf("live refresh failed and scheduler is locked: %w", e)
-	}
-	defer unlock()
-	c, e := config.Load(home)
-	if e != nil {
-		return e
-	}
-	s, e := core.New(statePath(home), c.Accounts)
-	if e != nil {
-		return e
-	}
-	ref := &refresher{home: home, s: s, p: provider.New(home)}
-	result, e := ref.refresh(context.Background(), id)
+	result, e := offlineRefresh(home, id)
 	if e != nil {
 		return e
 	}
@@ -164,6 +151,55 @@ func quota(home string, args []string, out, errOut io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// offlineRefresh reads providers without holding the scheduler lock, then
+// briefly locks the saved scheduler to install the readings. Concurrent
+// per-account refreshes therefore overlap their slow network reads.
+func offlineRefresh(home, id string) ([]refreshResult, error) {
+	c, e := config.Load(home)
+	if e != nil {
+		return nil, e
+	}
+	if id != "" {
+		if _, e = findAccount(c, id); e != nil {
+			return nil, e
+		}
+	}
+	accounts := refreshAccounts(c, id)
+	pending := make([]*model.Snapshot, len(accounts))
+	ref := &refresher{home: home, p: provider.New(home)}
+	result, e := ref.collect(context.Background(), accounts, func(i int, snap model.Snapshot) error {
+		pending[i] = &snap
+		return nil
+	})
+	if e != nil {
+		return nil, e
+	}
+	unlock, e := service.Guard(home, "daemon")
+	if e != nil {
+		return nil, fmt.Errorf("live refresh failed and scheduler is locked: %w", e)
+	}
+	defer unlock()
+	if c, e = config.Load(home); e != nil {
+		return nil, e
+	}
+	s, e := core.New(statePath(home), c.Accounts)
+	if e != nil {
+		return nil, e
+	}
+	for i, snap := range pending {
+		if snap == nil {
+			continue
+		}
+		if e := s.Update(*snap); e != nil {
+			result[i] = refreshResult{Account: accounts[i].ID, Error: e.Error()}
+		}
+	}
+	if e = recordQuotaRefresh(home, result); e != nil {
+		return result, e
+	}
+	return result, nil
 }
 
 func doctor(home string, args []string, out io.Writer) error {
