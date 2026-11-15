@@ -5,6 +5,11 @@ order: 11
 category: Reference
 ---
 
+## 0.5.0 · November 15, 2026
+
+- Redesigned the macOS menu bar usage rows. Each limit now shows its name and remaining percentage in bold, a progress bar for the allowance left, and a bold reset countdown with the local reset time.
+- Progress bars are colour-coded by remaining allowance: green normally, yellow below 25% left, and red below 10% left. Rows render correctly in light and dark mode and keep a VoiceOver description of the limit, percentage and reset.
+
 ## 0.4.6 · November 15, 2026
 
 - Fixed a retired Claude **5h** limit lingering in the menu bar and tray after Claude removed the session limit from an account. A complete Claude usage read now replaces the account's quota windows, so windows the provider no longer reports (including optional buckets like Fable Week) disappear instead of showing their last saved reading.

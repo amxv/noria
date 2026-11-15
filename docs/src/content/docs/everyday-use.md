@@ -9,7 +9,7 @@ After setup, Noria stays out of your way. Just open Codex or Claude Code normall
 
 ## Desktop tray and menu bar
 
-Click the **N** icon to see your accounts, remaining allowance, and reset times. Opening the menu refreshes usage in the background. Each account refreshes independently, so its numbers appear as soon as that provider answers. Only providers you've added are shown, and a quota window appears only if the provider reports it—for example, Codex plans without a five-hour limit won't show an empty five-hour row.
+Click the **N** icon to see your accounts, remaining allowance, and reset times. On macOS each limit has a progress bar for the allowance left: green normally, yellow below 25%, and red below 10%. Opening the menu refreshes usage in the background. Each account refreshes independently, so its numbers appear as soon as that provider answers. Only providers you've added are shown, and a quota window appears only if the provider reports it—for example, Codex plans without a five-hour limit won't show an empty five-hour row.
 
 macOS uses the native Swift menu bar. Windows and Linux use a Go tray app (`noria tray open`); it launches automatically on installation, starts at login by default, and reopens after upgrades. **Automatic desktop usage refresh is off by default**: opening the menu fetches live usage, but leaving the app open does not continuously poll the provider. On Ubuntu Desktop, KDE Plasma, and Linux Mint Cinnamon, the tray normally needs no additional setup. Other GNOME desktops may need the AppIndicator extension. Install `zenity` or `kdialog` for confirmation, alias, and folder-picker dialogs.
 

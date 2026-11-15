@@ -12,6 +12,7 @@ for key in CFBundleShortVersionString CFBundleVersion NoriaVersion; do /usr/libe
 swiftc -O -target "$arch-apple-macos13.0" \
  "$root/apps/menubar/Sources/Models.swift" \
  "$root/apps/menubar/Sources/SystemIntegration.swift" \
+ "$root/apps/menubar/Sources/QuotaRowView.swift" \
  "$root/apps/menubar/Sources/AppDelegate.swift" \
  "$root/apps/menubar/Sources/main.swift" \
  -o "$out/Contents/MacOS/noria-menubar"

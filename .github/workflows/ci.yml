@@ -91,6 +91,7 @@ jobs:
           ./apps/menubar/build.sh "$PWD/dist/Noria.app" "$(uname -m)"
           dist/Noria.app/Contents/MacOS/noria-menubar --check
           dist/Noria.app/Contents/MacOS/noria-menubar --validate-status-json apps/menubar/Tests/status.json
+          dist/Noria.app/Contents/MacOS/noria-menubar --validate-quota-levels
           ./apps/menubar/build.sh "$PWD/dist/Noria-intel.app" x86_64
           ./apps/menubar/build.sh "$PWD/dist/Noria-arm.app" arm64
       - name: Verify service start and direct restoration

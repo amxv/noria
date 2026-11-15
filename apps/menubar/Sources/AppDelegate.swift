@@ -155,8 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let current = quotaIsCurrent(for: account)
         let rows = current ? visibleQuotaWindows(for: account) : []
         for (title, window) in rows {
-            let row = label(windowText(window, title: title)); row.indentationLevel = 1
-            if let reset = window.resets_at { let format = DateFormatter(); format.dateStyle = .medium; format.timeStyle = .short; row.toolTip = "Resets \(format.string(from: reset))" }
+            let row = NSMenuItem(); row.isEnabled = false
+            let view = QuotaRowView(model: QuotaRowModel(title: title, window: window))
+            if let reset = window.resets_at { let format = DateFormatter(); format.dateStyle = .medium; format.timeStyle = .short; view.toolTip = "Resets \(format.string(from: reset))" }
+            row.view = view
             menu.addItem(row)
         }
         if rows.isEmpty {

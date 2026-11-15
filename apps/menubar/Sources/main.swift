@@ -85,6 +85,44 @@ if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--validate-r
         exit(0)
     } catch { fputs("Invalid refresh preference fixture: \(error.localizedDescription)\n", stderr); exit(1) }
 }
+if CommandLine.arguments.contains("--validate-quota-levels") {
+    let now = Date()
+    let window = QuotaWindow(name: "five_hour", model: nil, used_percent: 16, resets_at: now.addingTimeInterval(9_660), duration: 18_000_000_000_000)
+    let row = QuotaRowModel(title: "5h", window: window, now: now)
+    guard QuotaLevel(percentLeft: 84) == .healthy, QuotaLevel(percentLeft: 25) == .healthy,
+          QuotaLevel(percentLeft: 24.9) == .low, QuotaLevel(percentLeft: 10) == .low,
+          QuotaLevel(percentLeft: 9.9) == .critical, QuotaLevel(percentLeft: 0) == .critical,
+          row.percentText == "84% left", row.resetText == "Resets in 2h 41m", row.level == .healthy,
+          QuotaRowModel(title: "Week", window: QuotaWindow(name: "seven_day", model: nil, used_percent: nil, resets_at: nil, duration: nil), now: now).level == nil
+    else { exit(1) }
+    print("Native menu quota bars: green, yellow below 25% and red below 10% left")
+    exit(0)
+}
+// Development aid: draw sample quota rows in light and dark appearance.
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--render-quota-preview" {
+    let now = Date()
+    let samples: [(String, Double, TimeInterval)] = [("5h", 16, 9_660), ("Week", 76, 35_460), ("Fable Week", 59, 35_460), ("5h", 93, 1_500)]
+    let width: CGFloat = 300, rowHeight = QuotaRowView.height
+    let column = NSView(frame: NSRect(x: 0, y: 0, width: width * 2, height: rowHeight * CGFloat(samples.count)))
+    for (side, name) in [NSAppearance.Name.aqua, .darkAqua].enumerated() {
+        let pane = NSView(frame: NSRect(x: CGFloat(side) * width, y: 0, width: width, height: column.frame.height))
+        pane.appearance = NSAppearance(named: name)
+        pane.wantsLayer = true
+        pane.layer?.backgroundColor = (name == .aqua ? NSColor(white: 0.96, alpha: 1) : NSColor(white: 0.16, alpha: 1)).cgColor
+        for (index, sample) in samples.enumerated() {
+            let window = QuotaWindow(name: sample.0, model: nil, used_percent: sample.1, resets_at: now.addingTimeInterval(sample.2), duration: nil)
+            let view = QuotaRowView(model: QuotaRowModel(title: sample.0, window: window, now: now), width: width)
+            view.frame.origin.y = CGFloat(samples.count - 1 - index) * rowHeight
+            pane.addSubview(view)
+        }
+        column.addSubview(pane)
+    }
+    guard let bitmap = column.bitmapImageRepForCachingDisplay(in: column.bounds) else { exit(1) }
+    column.cacheDisplay(in: column.bounds, to: bitmap)
+    guard let png = bitmap.representation(using: .png, properties: [:]),
+          (try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[2]))) != nil else { exit(1) }
+    exit(0)
+}
 let home = selectedHome()
 do { try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
 catch { fputs("Cannot open the Noria private home.\n", stderr); exit(1) }

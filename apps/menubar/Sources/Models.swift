@@ -130,10 +130,5 @@ func windowText(_ window: QuotaWindow?, title: String) -> String {
     guard let reset = window.resets_at else { return "\(title)    \(left) · reset unknown" }
     let seconds = reset.timeIntervalSinceNow
     if seconds <= 0 { return "\(title)    \(left) · refreshing reset" }
-    let minutes = Int(ceil(seconds / 60))
-    let countdown: String
-    if minutes >= 1440 { countdown = "\(minutes / 1440)d \((minutes % 1440) / 60)h" }
-    else if minutes >= 60 { countdown = "\(minutes / 60)h \(minutes % 60)m" }
-    else { countdown = "\(minutes)m" }
-    return "\(title)    \(left) · resets in \(countdown)"
+    return "\(title)    \(left) · resets in \(quotaCountdown(seconds))"
 }
