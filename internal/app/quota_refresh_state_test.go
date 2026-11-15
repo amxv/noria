@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestQuotaRefreshFailureIsPersistedAndVisibleInHealth(t *testing.T) {
 		t.Fatalf("dashboard lost last refresh failure: %+v", entry)
 	}
 	info, err := os.Stat(filepath.Join(home, "quota-refresh.json"))
-	if err != nil || info.Mode().Perm() != 0600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("refresh diagnostics must be private: %v %+v", err, info)
 	}
 	if err := recordQuotaRefresh(home, []refreshResult{{Account: "fixture", OK: true}}); err != nil {
