@@ -113,3 +113,18 @@ func TestInvalidDashboardSchema(t *testing.T) {
 		t.Fatal("future schema accepted")
 	}
 }
+
+func TestTrayKeepsLastReadingDuringRateLimitCooldown(t *testing.T) {
+	used := 23.0
+	now := time.Now()
+	retry := now.Add(5 * time.Minute)
+	a := Account{Provider: "claude", Snapshot: &Snapshot{Available: true, ObservedAt: now.Add(-15 * time.Minute), Windows: []QuotaWindow{{Name: "seven_day", Duration: int64(7 * 24 * time.Hour), UsedPercent: &used}}},
+		LastRefresh: &QuotaRefreshStatus{AttemptedAt: now, Error: "rate limited", RateLimited: true, RetryAt: &retry}}
+	if a.QuotaIsCurrent(now) || !a.RateLimited() || len(a.CurrentWindows(now)) != 1 {
+		t.Fatal("rate-limited account must keep its last reading visible but not live")
+	}
+	a.Snapshot.ObservedAt = now.Add(-2 * time.Hour)
+	if len(a.CurrentWindows(now)) != 0 {
+		t.Fatal("very old reading shown during rate limit")
+	}
+}

@@ -153,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         })
         header.submenu = commands; menu.addItem(header)
         let current = quotaIsCurrent(for: account)
-        let rows = current ? visibleQuotaWindows(for: account) : []
+        let rows = quotaIsShown(for: account) ? visibleQuotaWindows(for: account) : []
         for (title, window) in rows {
             let row = NSMenuItem(); row.isEnabled = false
             let view = QuotaRowView(model: QuotaRowModel(title: title, window: window))
@@ -165,7 +165,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let unavailable = label(current ? "Usage unavailable" : (refreshingAccounts.contains(account.id) ? "Checking live usage…" : "Live usage unavailable")); unavailable.indentationLevel = 1
             menu.addItem(unavailable)
         }
-        if let last = account.last_refresh, !last.ok {
+        let time = DateFormatter(); time.dateStyle = .none; time.timeStyle = .short
+        if quotaRateLimited(account), let last = account.last_refresh {
+            var text = "Usage checks paused by provider"
+            if let retry = last.retry_at { text += " · retrying \(time.string(from: retry))" }
+            let paused = label(text); paused.indentationLevel = 1; paused.toolTip = last.error
+            paused.image = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)
+            menu.addItem(paused)
+            if !current, !rows.isEmpty, let observed = account.snapshot?.observed_at {
+                let shown = label("Showing reading from \(time.string(from: observed))"); shown.indentationLevel = 1
+                menu.addItem(shown)
+            }
+        } else if let last = account.last_refresh, !last.ok {
             let error = last.error ?? "Quota provider unavailable"
             let failure = label("Refresh failed · \(String(error.prefix(75)))")
             failure.toolTip = error
@@ -222,8 +233,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self else { return }
                 self.refreshingAccounts.remove(account.id)
                 if result.status != 0 {
-                    let detail = (try? decodeJSON([QuotaRefreshResult].self, from: result.output))?.first(where: { !$0.ok })?.error ?? result.error
-                    self.refreshFailures.append("\(account.title): \(detail)")
+                    let failed = (try? decodeJSON([QuotaRefreshResult].self, from: result.output))?.first(where: { !$0.ok })
+                    // A provider cooldown is shown on the account row instead.
+                    if failed?.retry_at == nil {
+                        self.refreshFailures.append("\(account.title): \(failed?.error ?? result.error)")
+                    }
                 }
                 if self.refreshingAccounts.isEmpty, let failure = self.refreshFailures.first {
                     self.refreshMessage = "Refresh failed · \(String(failure.prefix(90)))"

@@ -169,6 +169,9 @@ func (m *Manager) claudeOAuthUsage(ctx context.Context, id, token string, starte
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return model.Snapshot{}, errClaudeUsageUnauthorized
 		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return model.Snapshot{}, &RateLimitError{Provider: "Claude", Until: usageRetryAt(resp.Header, time.Now())}
+		}
 		return model.Snapshot{}, fmt.Errorf("Claude subscription usage returned HTTP %d", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))

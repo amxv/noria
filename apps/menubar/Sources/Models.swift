@@ -17,11 +17,30 @@ struct QuotaRefreshStatus: Decodable {
     let attempted_at: Date
     let ok: Bool
     let error: String?
+    var rate_limited: Bool? = nil
+    var retry_at: Date? = nil
 }
 struct QuotaRefreshResult: Decodable {
     let account: String
     let ok: Bool
     let error: String?
+    var retry_at: Date? = nil
+}
+
+// The provider is rate limiting usage checks and Noria is waiting out the
+// cooldown. This is expected back-pressure, not a broken account.
+func quotaRateLimited(_ account: AccountStatus) -> Bool {
+    guard let refresh = account.last_refresh else { return false }
+    return !refresh.ok && refresh.rate_limited == true
+}
+
+// Keep the last-known reading visible (marked as not live) during a rate
+// limit cooldown rather than hiding every number.
+func quotaIsShown(for account: AccountStatus, now: Date = Date()) -> Bool {
+    if quotaIsCurrent(for: account, now: now) { return true }
+    guard quotaRateLimited(account), let snapshot = account.snapshot, snapshot.available else { return false }
+    let age = now.timeIntervalSince(snapshot.observed_at)
+    return age >= -30 && age <= 3600
 }
 struct AccountStatus: Decodable {
     let id: String

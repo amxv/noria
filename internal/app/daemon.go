@@ -49,6 +49,10 @@ type refreshResult struct {
 	Account string `json:"account"`
 	OK      bool   `json:"ok"`
 	Error   string `json:"error,omitempty"`
+	// Deferred is set when no provider request was made: "rate_limited"
+	// during a provider cooldown, or "recent" after a fresh successful read.
+	Deferred string     `json:"deferred,omitempty"`
+	RetryAt  *time.Time `json:"retry_at,omitempty"`
 }
 
 // refresh reads each selected account independently. The mutex only guards
@@ -100,12 +104,21 @@ func refreshAccounts(c config.Config, id string) []model.Account {
 // read to apply as soon as it arrives.
 func (r *refresher) collect(ctx context.Context, accounts []model.Account, apply func(int, model.Snapshot) error) ([]refreshResult, error) {
 	results := make([]refreshResult, len(accounts))
+	previous := readQuotaRefreshStatus(r.home)
 	slots := make(chan struct{}, 4)
 	var group sync.WaitGroup
 	for i, a := range accounts {
 		if ctx.Err() != nil {
 			group.Wait()
 			return nil, ctx.Err()
+		}
+		if last, found := previous[a.ID]; refreshDeferral(last, found, time.Now()) != "" {
+			deferred := refreshDeferral(last, found, time.Now())
+			results[i] = refreshResult{Account: a.ID, OK: deferred == "recent", Deferred: deferred, RetryAt: last.RetryAt}
+			if deferred == "rate_limited" {
+				results[i].Error = last.Error
+			}
+			continue
 		}
 		group.Add(1)
 		go func(i int, a model.Account) {
@@ -139,6 +152,11 @@ func (r *refresher) collect(ctx context.Context, accounts []model.Account, apply
 			result := refreshResult{Account: a.ID, OK: e == nil}
 			if e != nil {
 				result.Error = e.Error()
+				var limited *provider.RateLimitError
+				if errors.As(e, &limited) {
+					until := limited.Until
+					result.RetryAt = &until
+				}
 			}
 			results[i] = result
 		}(i, a)

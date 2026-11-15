@@ -111,3 +111,45 @@ func TestQuotaRefreshDiagnosticsMergeAndDoNotStoreControlCharacters(t *testing.T
 		t.Fatalf("stale success not preserved as stale: %+v", got)
 	}
 }
+
+func TestRefreshDeferralCooldownAndDebounce(t *testing.T) {
+	now := time.Now()
+	retry := now.Add(4 * time.Minute)
+	expired := now.Add(-time.Second)
+	cases := []struct {
+		name  string
+		last  quotaRefreshStatus
+		found bool
+		want  string
+	}{
+		{"never refreshed", quotaRefreshStatus{}, false, ""},
+		{"active cooldown", quotaRefreshStatus{AttemptedAt: now.Add(-time.Minute), RateLimited: true, RetryAt: &retry}, true, "rate_limited"},
+		{"expired cooldown", quotaRefreshStatus{AttemptedAt: now.Add(-6 * time.Minute), RateLimited: true, RetryAt: &expired}, true, ""},
+		{"recent success", quotaRefreshStatus{AttemptedAt: now.Add(-10 * time.Second), OK: true}, true, "recent"},
+		{"older success", quotaRefreshStatus{AttemptedAt: now.Add(-time.Minute), OK: true}, true, ""},
+		{"recent failure retries", quotaRefreshStatus{AttemptedAt: now.Add(-5 * time.Second), Error: "boom"}, true, ""},
+	}
+	for _, c := range cases {
+		if got := refreshDeferral(c.last, c.found, now); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRateLimitedRefreshIsRecordedAndDeferredResultsKeepIt(t *testing.T) {
+	home := t.TempDir()
+	if err := config.Init(home); err != nil {
+		t.Fatal(err)
+	}
+	retry := time.Now().Add(5 * time.Minute).Round(time.Second)
+	if err := recordQuotaRefresh(home, []refreshResult{{Account: "a", Error: "Claude is rate limiting usage checks", RetryAt: &retry}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordQuotaRefresh(home, []refreshResult{{Account: "a", Deferred: "rate_limited", RetryAt: &retry}}); err != nil {
+		t.Fatal(err)
+	}
+	got := readQuotaRefreshStatus(home)["a"]
+	if got.OK || !got.RateLimited || got.RetryAt == nil || !got.RetryAt.Equal(retry) {
+		t.Fatalf("cooldown not persisted across a deferred refresh: %+v", got)
+	}
+}

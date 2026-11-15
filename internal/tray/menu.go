@@ -142,7 +142,16 @@ func (a *app) addAccount(menu *systray.Menu, account Account) {
 			disabled(menu, "    Live usage unavailable")
 		}
 	}
-	if account.LastRefresh != nil && !account.LastRefresh.OK {
+	if account.RateLimited() {
+		note := "    Usage checks paused by provider"
+		if account.LastRefresh.RetryAt != nil {
+			note += " · retrying " + account.LastRefresh.RetryAt.Local().Format("3:04 PM")
+		}
+		disabled(menu, note)
+		if len(rows) > 0 && account.Snapshot != nil {
+			disabled(menu, "    Showing reading from "+account.Snapshot.ObservedAt.Local().Format("3:04 PM"))
+		}
+	} else if account.LastRefresh != nil && !account.LastRefresh.OK {
 		disabled(menu, "    Refresh failed · "+account.LastRefresh.Error)
 	} else if !account.QuotaIsCurrent(time.Now()) && account.Snapshot != nil {
 		disabled(menu, "    Last verified "+account.Snapshot.ObservedAt.Local().Format("3:04 PM")+" · not live")

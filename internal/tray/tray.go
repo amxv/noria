@@ -262,6 +262,11 @@ func (a *app) refreshQuota() {
 	for _, id := range targets {
 		go func(id string) {
 			_, err := a.cli.run(60*time.Second, "quota", "refresh", id)
+			if err != nil && a.accountRateLimited(id) {
+				// A provider cooldown is shown on the account row, not as a
+				// failed refresh.
+				err = nil
+			}
 			a.mu.Lock()
 			delete(a.refreshing, id)
 			if err != nil {
@@ -275,6 +280,25 @@ func (a *app) refreshQuota() {
 			a.loadStatus()
 		}(id)
 	}
+}
+
+// accountRateLimited reloads status synchronously enough to classify a failed
+// refresh: rate-limit cooldowns are expected and displayed per account.
+func (a *app) accountRateLimited(id string) bool {
+	data, err := a.cli.run(8*time.Second, "status", "--json")
+	if err != nil {
+		return false
+	}
+	dashboard, err := ParseDashboard(data)
+	if err != nil {
+		return false
+	}
+	for _, account := range dashboard.Accounts {
+		if account.ID == id {
+			return account.RateLimited()
+		}
+	}
+	return false
 }
 
 func (a *app) quotaBusy() bool { return len(a.refreshing) > 0 }

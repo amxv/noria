@@ -63,7 +63,13 @@ if CommandLine.arguments.contains("--validate-quota-freshness") {
             snapshot: QuotaSnapshot(observed_at: observed, available: true, auth_invalid: nil, windows: []),
             last_refresh: failedAt.map { QuotaRefreshStatus(attempted_at: $0, ok: false, error: "auth failed") })
     }
-    guard quotaIsCurrent(for: account(observed: now), now: now),
+    var limited = account(observed: now.addingTimeInterval(-900), failedAt: now)
+    limited = AccountStatus(id: limited.id, email: limited.email, alias: nil, provider: "claude", enabled: true, inflight: 0,
+        snapshot: limited.snapshot, last_refresh: QuotaRefreshStatus(attempted_at: now, ok: false, error: "rate limited",
+        rate_limited: true, retry_at: now.addingTimeInterval(300)))
+    guard quotaIsShown(for: limited, now: now), !quotaIsCurrent(for: limited, now: now), quotaRateLimited(limited),
+          !quotaIsShown(for: account(observed: now.addingTimeInterval(-45), failedAt: now), now: now),
+          quotaIsCurrent(for: account(observed: now), now: now),
           !quotaIsCurrent(for: account(observed: now.addingTimeInterval(-600)), now: now),
           !quotaIsCurrent(for: account(observed: now.addingTimeInterval(-45), failedAt: now), now: now)
     else { exit(1) }

@@ -40,9 +40,33 @@ type Account struct {
 }
 
 type QuotaRefreshStatus struct {
-	AttemptedAt time.Time `json:"attempted_at"`
-	OK          bool      `json:"ok"`
-	Error       string    `json:"error"`
+	AttemptedAt time.Time  `json:"attempted_at"`
+	OK          bool       `json:"ok"`
+	Error       string     `json:"error"`
+	RateLimited bool       `json:"rate_limited"`
+	RetryAt     *time.Time `json:"retry_at"`
+}
+
+// usageRateLimitedShowFor bounds how old a last-known reading may be while
+// the provider is rate limiting usage checks and the reading is still shown.
+const usageRateLimitedShowFor = time.Hour
+
+// RateLimited reports an active provider cooldown on usage reads.
+func (a Account) RateLimited() bool {
+	return a.LastRefresh != nil && !a.LastRefresh.OK && a.LastRefresh.RateLimited
+}
+
+// QuotaIsShown keeps the last-known reading visible (marked as not live)
+// while the provider rate-limits usage checks, instead of hiding it.
+func (a Account) QuotaIsShown(now time.Time) bool {
+	if a.QuotaIsCurrent(now) {
+		return true
+	}
+	if !a.RateLimited() || a.Snapshot == nil || !a.Snapshot.Available {
+		return false
+	}
+	age := now.Sub(a.Snapshot.ObservedAt)
+	return age >= -30*time.Second && age <= usageRateLimitedShowFor
 }
 
 func (a Account) QuotaIsCurrent(now time.Time) bool {
@@ -57,7 +81,7 @@ func (a Account) QuotaIsCurrent(now time.Time) bool {
 }
 
 func (a Account) CurrentWindows(now time.Time) []QuotaRow {
-	if !a.QuotaIsCurrent(now) {
+	if !a.QuotaIsShown(now) {
 		return nil
 	}
 	return a.VisibleWindows()

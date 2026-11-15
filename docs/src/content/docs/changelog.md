@@ -5,6 +5,11 @@ order: 11
 category: Reference
 ---
 
+## 0.5.1 · November 15, 2026
+
+- Fixed Claude usage disappearing with "Claude subscription usage returned HTTP 429". When a provider rate-limits usage checks, Noria now waits out its `Retry-After` cooldown (5 minutes by default) instead of retrying on every menu open, and keeps showing the last reading with a "Usage checks paused · retrying at …" note.
+- Repeated menu opens no longer re-read an account whose usage was read successfully in the last 30 seconds, which keeps Noria well clear of provider usage-check limits.
+
 ## 0.5.0 · November 15, 2026
 
 - Redesigned the macOS menu bar usage rows. Each limit now shows its name and remaining percentage in bold, a progress bar for the allowance left, and a bold reset countdown with the local reset time.
