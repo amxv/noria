@@ -145,18 +145,14 @@ impl Manager {
 fn find_executable(path: &Path) -> Option<PathBuf> {
     let valid = |p: &Path| {
         std::fs::metadata(p).ok().is_some_and(|m| {
-            if !m.is_file() {
-                return false;
-            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                m.permissions().mode() & 0o111 != 0
+                if m.permissions().mode() & 0o111 == 0 {
+                    return false;
+                }
             }
-            #[cfg(not(unix))]
-            {
-                true
-            }
+            m.is_file()
         })
     };
     if path.components().count() > 1 {

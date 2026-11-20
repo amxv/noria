@@ -175,16 +175,14 @@ pub(super) fn executable_available(name: &str) -> bool {
     };
     std::env::split_paths(&path).any(|dir| {
         let candidate = dir.join(name);
-        if candidate.is_file() {
+        #[cfg(windows)]
+        if ["exe", "cmd", "bat"]
+            .iter()
+            .any(|ext| candidate.with_extension(ext).is_file())
+        {
             return true;
         }
-        #[cfg(windows)]
-        for ext in ["exe", "cmd", "bat"] {
-            if candidate.with_extension(ext).is_file() {
-                return true;
-            }
-        }
-        false
+        candidate.is_file()
     })
 }
 pub async fn health(home: &Path, mut args: Vec<String>) -> Result<()> {
@@ -267,9 +265,6 @@ fn private_permissions(path: &Path) -> bool {
     let Ok(info) = std::fs::symlink_metadata(path) else {
         return false;
     };
-    if info.file_type().is_symlink() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -277,7 +272,7 @@ fn private_permissions(path: &Path) -> bool {
             return false;
         }
     }
-    true
+    !info.file_type().is_symlink()
 }
 pub fn doctor(home: &Path, args: Vec<String>) -> Result<()> {
     if help_requested(&args) {

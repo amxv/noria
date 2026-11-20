@@ -96,7 +96,7 @@ impl ksni::Tray for Indicator {
 
 fn icon(running: bool) -> ksni::Icon {
     let mut data = menu::icon_rgba(running);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel.rotate_right(1); // D-Bus pixmaps use network-order ARGB.
     }
     ksni::Icon {
