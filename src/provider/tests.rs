@@ -315,7 +315,7 @@ async fn native_cancellation_kills_process_and_releases_profile() {
     m.codex_command = script(
         temp.path(),
         "hung-codex",
-        "#!/bin/sh\nprintf '%s' \"$$\" > \"$CODEX_HOME/pid\"\nsleep 60\n",
+        "#!/bin/sh\nprintf '%s' \"$$\" > \"$CODEX_HOME/pid.tmp\" && mv \"$CODEX_HOME/pid.tmp\" \"$CODEX_HOME/pid\"\nsleep 60\n",
     );
     let account = a.clone();
     let task = tokio::spawn(async move { m.refresh(&account).await });
