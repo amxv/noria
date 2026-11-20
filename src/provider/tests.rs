@@ -104,6 +104,22 @@ fn credit_gate_model_identity_and_distinct_limit_ids() {
     assert_ne!(s.windows[0].limit_id, s.windows[1].limit_id);
 }
 #[test]
+fn claude_scoped_limits_supersede_legacy_and_retire_absent_session() {
+    let raw = json!({"rate_limits_available":true,"rate_limits":{
+        "five_hour": null, "seven_day":{"utilization":15,"resets_at":null},
+        "model_scoped":[{"display_name":"Claude Fable 1","utilization":31,"resets_at":null}],
+        "limits":[{"kind":"weekly_all","group":"weekly","percent":40,"resets_at":null},
+            {"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":21,"resets_at":null},
+            {"kind":"weekly_scoped","scope":{"model":{"display_name":"Unsupported"}}}]
+    }});
+    let s = parse_claude("a", &serde_json::to_vec(&raw).unwrap(), Utc::now()).unwrap();
+    assert!(s.complete && s.available);
+    assert_eq!(s.windows.len(), 2);
+    assert_eq!(s.windows[0].used, Some(40.0));
+    assert_eq!(s.windows[1].model, "fable");
+    assert_eq!(s.windows[1].used, Some(21.0));
+}
+#[test]
 fn claude_partial_scopes_offset_and_schema_validation() {
     let s=parse_claude("a",br#"{"rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":12.5,"resets_at":"2026-10-20T01:02:03+05:30"},"seven_day":null,"seven_day_sonnet":{"utilization":null,"resets_at":null},"seven_day_breakdown":{"rows":[]},"extra_usage":{"is_enabled":false}}}"#,Utc::now()).unwrap();
     assert!(s.available);
@@ -289,7 +305,7 @@ with open(p+'/calls','a') as calls:
     assert_eq!(s.windows.len(), 1);
     let calls = std::fs::read_to_string(Path::new(&a.profile).join("calls")).unwrap();
     assert_eq!(calls.matches("refreshToken=true").count(), 1);
-    assert_eq!(calls.matches("refreshToken=false").count(), 1);
+    assert_eq!(calls.matches("refreshToken=false").count(), 0);
     assert!(config::lock(&a.profile, "native").is_ok());
 }
 #[cfg(unix)]
@@ -457,24 +473,120 @@ async fn failed_oauth_refresh_is_redacted_and_leaves_native_file_unchanged() {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
-async fn claude_null_control_uses_same_profile_oauth_without_user_turn() {
-    let (temp, mut manager, account) = fixture("claude");
-    manager.claude_command = script(
-        temp.path(),
-        "null-claude",
-        r##"#!/usr/bin/env python3
-import json,sys
-for line in sys.stdin:
- r=json.loads(line)
- assert r['type']=='control_request'
- subtype=r['request']['subtype']
- assert subtype in ('initialize','get_usage')
- result={} if subtype=='initialize' else {'rate_limits_available':True,'rate_limits':None}
- print(json.dumps({'type':'control_response','response':{'request_id':r['request_id'],'subtype':'success','response':result}}),flush=True)
-"##,
+async fn independent_offline_refreshes_merge_and_honor_persisted_cooldown() {
+    use crate::app::refresh::Refresher;
+    use axum::response::IntoResponse;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let home = tempfile::tempdir().unwrap();
+    config::init(home.path()).unwrap();
+    let accounts: Vec<_> = ["slow", "fast"]
+        .into_iter()
+        .map(|id| {
+            let path = home.path().join("accounts").join(id);
+            let data = json!({"claudeAiOauth":{"accessToken":id, "expiresAt":4102444800000_i64}});
+            config::write(
+                path.join(".credentials.json"),
+                &serde_json::to_vec(&data).unwrap(),
+            )
+            .unwrap();
+            Account {
+                id: id.into(),
+                provider: "claude".into(),
+                email: format!("{id}@example.test"),
+                profile: path.to_str().unwrap().into(),
+                enabled: true,
+                ..Default::default()
+            }
+        })
+        .collect();
+    config::mutate(home.path(), |c| {
+        c.accounts = accounts.clone();
+        Ok(())
+    })
+    .unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = axum::Router::new().fallback({
+        let release = release.clone();
+        let calls = calls.clone();
+        move |headers: axum::http::HeaderMap| {
+            let release = release.clone();
+            let calls = calls.clone();
+            async move {
+                if headers["authorization"] == "Bearer slow" {
+                    release.notified().await;
+                } else if calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return (
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        [("retry-after", "120")],
+                        "private provider error",
+                    )
+                        .into_response();
+                }
+                axum::Json(json!({"seven_day":{"utilization":47,"resets_at":null}})).into_response()
+            }
+        }
+    });
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut manager = Manager::new(home.path());
+    manager.claude_usage_url = format!("http://{}/usage", socket.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(socket, app).await.unwrap() });
+    let reader = Refresher {
+        home: home.path(),
+        provider: &manager,
+        scheduler: None,
+    };
+    let fast = async {
+        let first = reader.refresh("fast").await.unwrap();
+        assert!(first[0].ok);
+        let recent = serde_json::to_value(reader.refresh("fast").await.unwrap()).unwrap();
+        assert_eq!(recent[0]["deferred"], "recent");
+        let limited = reader.read_account(&accounts[1], true).await.unwrap();
+        assert!(!limited.ok);
+        assert!(limited.error.contains("rate limiting"));
+        let path = home.path().join("quota-refresh.json");
+        let before = std::fs::read(&path).unwrap();
+        let deferred = serde_json::to_value(reader.refresh("fast").await.unwrap()).unwrap();
+        assert_eq!(deferred[0]["deferred"], "rate_limited");
+        let retry: chrono::DateTime<Utc> =
+            serde_json::from_value(deferred[0]["retry_at"].clone()).unwrap();
+        assert!((110..=120).contains(&(retry - Utc::now()).num_seconds()));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            !String::from_utf8(before)
+                .unwrap()
+                .contains("private provider error")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        release.notify_one();
+    };
+    let (slow, ()) = tokio::join!(reader.refresh("slow"), fast);
+    assert!(slow.unwrap()[0].ok);
+    let saved = Scheduler::new(home.path().join("scheduler.json"), accounts)
+        .unwrap()
+        .status();
+    assert!(
+        saved
+            .accounts
+            .iter()
+            .all(|a| a.snapshot.as_ref().unwrap().windows[0].used == Some(47.0))
     );
+    let entries: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.path().join("quota-refresh.json")).unwrap())
+            .unwrap();
+    assert_eq!(entries["slow"]["ok"], true);
+    assert_eq!(entries["fast"]["rate_limited"], true);
+    server.abort();
+}
+
+#[tokio::test]
+async fn claude_prefers_live_same_profile_oauth_without_native_client() {
+    let (temp, mut manager, account) = fixture("claude");
+    manager.claude_command = temp.path().join("must-not-run");
     config::write(
         Path::new(&account.profile).join(".credentials.json"),
         br#"{"claudeAiOauth":{"accessToken":"same-profile-fixture","expiresAt":4102444800000}}"#,

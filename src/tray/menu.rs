@@ -113,14 +113,22 @@ impl Builder {
         menu.append(&submenu)?;
         let now = Utc::now();
         let rows = account.quota_rows(now);
+        let note = account.refresh_note(now, !rows.is_empty());
         if rows.is_empty() {
-            self.label(menu, "    Usage unavailable")?;
+            self.label(
+                menu,
+                if app.refreshing.contains(&account.id) {
+                    "    Checking live usage…"
+                } else {
+                    "    Live usage unavailable"
+                },
+            )?;
         }
         for row in rows {
             self.label(menu, &format!("    {row}"))?;
         }
-        if account.stale(now) {
-            self.label(menu, "    Last snapshot is stale")?;
+        if let Some(note) = note {
+            self.label(menu, &format!("    {note}"))?;
         }
         Ok(())
     }
@@ -209,6 +217,27 @@ impl Builder {
         self.action(&config, "Health Check", true, Action::Health)?;
         self.separator(&config)?;
         let preferences = dashboard.map(|d| d.preferences.clone()).unwrap_or_default();
+        let intervals = Submenu::new("Usage Auto-Refresh", dashboard.is_some());
+        for minutes in noria::config::QUOTA_REFRESH_INTERVALS {
+            let label = if minutes == 0 {
+                "On Menu Open Only (Default)".to_owned()
+            } else {
+                format!("Every {minutes} Minutes")
+            };
+            self.check(
+                &intervals,
+                &label,
+                preferences.quota_refresh_minutes == minutes,
+                !app.mutation_busy,
+                Action::mutation([
+                    "preferences",
+                    "quota-refresh-minutes",
+                    &minutes.to_string(),
+                    "--json",
+                ]),
+            )?;
+        }
+        config.append(&intervals)?;
         for (label, key, value) in [
             (
                 "Launch Tray at Login",
@@ -320,15 +349,19 @@ pub fn build(app: &App) -> Result<(Menu, HashMap<MenuId, Action>)> {
     builder.separator(&menu)?;
     builder.action(
         &menu,
-        if app.quota_busy {
+        if !app.refreshing.is_empty() {
             "Refreshing Usage…"
         } else {
             "Refresh Usage"
         },
-        !app.quota_busy,
+        app.refreshing.is_empty(),
         Action::RefreshQuota,
     )?;
-    if app.quota_error {
+    if dashboard.is_some_and(|d| {
+        d.accounts
+            .iter()
+            .any(|a| app.failed.contains(&a.id) && !a.rate_limited())
+    }) {
         builder.label(&menu, "Some accounts need attention · Health Check")?;
     }
     if app.status_error.is_some() {
@@ -351,7 +384,7 @@ pub fn build(app: &App) -> Result<(Menu, HashMap<MenuId, Action>)> {
     Ok((menu, builder.actions))
 }
 
-pub fn icon(running: bool) -> tray_icon::Icon {
+pub fn icon_rgba(running: bool) -> Vec<u8> {
     let mut rgba = vec![0_u8; 48 * 48 * 4];
     let background = if running {
         [24, 33, 43, 255]
@@ -373,5 +406,10 @@ pub fn icon(running: bool) -> tray_icon::Icon {
             }
         }
     }
-    tray_icon::Icon::from_rgba(rgba, 48, 48).expect("valid fixed-size tray icon")
+    rgba
+}
+
+#[cfg(windows)]
+pub fn icon(running: bool) -> tray_icon::Icon {
+    tray_icon::Icon::from_rgba(icon_rgba(running), 48, 48).expect("valid fixed-size tray icon")
 }

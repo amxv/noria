@@ -14,7 +14,7 @@ impl Manager {
     pub async fn login(&self, a: &Account) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(5 * 60), async {
             let p = self.profile(a).await?;
-            let _guard = self.lock_profile(&p).await?;
+            let _guard = crate::config::lock_async(&p, "native").await?;
             if a.provider == "codex" {
                 self.codex_login(&p).await
             } else {

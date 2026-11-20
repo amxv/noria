@@ -16,13 +16,33 @@ pub(super) fn menu_path(exe: &Path) -> PathBuf {
 pub async fn preferences(home: &Path, mut args: Vec<String>) -> Result<()> {
     if help_requested(&args) {
         println!(
-            "Usage: noria preferences [start-at-login|menubar-at-login|tray-at-login|auto-update on|off] [--json]\nAll preferences are owned by the CLI. Quitting the desktop UI does not stop routing."
+            "Usage: noria preferences [start-at-login|menubar-at-login|tray-at-login|auto-update on|off] [--json]\n       noria preferences quota-refresh-minutes on-open|0|2|5|10|15|30|60|120|180 [--json]\nAll preferences are owned by the CLI. Quitting the desktop UI does not stop routing."
         );
         return Ok(());
     }
     let as_json = flag(&mut args, "--json");
     config::init(home)?;
-    if !args.is_empty() {
+    if args
+        .first()
+        .is_some_and(|key| key == "quota-refresh-minutes")
+    {
+        ensure!(
+            args.len() == 2,
+            "specify a usage refresh interval in minutes or on-open"
+        );
+        let minutes = if args[1] == "on-open" {
+            0
+        } else {
+            args[1]
+                .parse::<u16>()
+                .context("invalid usage refresh interval")?
+        };
+        config::validate_quota_refresh(minutes)?;
+        config::mutate(home, |c| {
+            c.quota_refresh_minutes = minutes;
+            Ok(())
+        })?;
+    } else if !args.is_empty() {
         ensure!(
             args.len() == 2 && matches!(args[1].as_str(), "on" | "off"),
             "specify a preference followed by on or off"
@@ -52,7 +72,7 @@ pub async fn preferences(home: &Path, mut args: Vec<String>) -> Result<()> {
         }
     }
     let c = config::load(home)?;
-    let mut value = json!({"start_at_login":c.start_at_login,"menubar_at_login":c.menubar_at_login,"auto_update":c.auto_update});
+    let mut value = json!({"start_at_login":c.start_at_login,"menubar_at_login":c.menubar_at_login,"auto_update":c.auto_update,"quota_refresh_minutes":c.quota_refresh_minutes});
     if !cfg!(target_os = "macos") {
         value["tray_at_login"] = json!(c.menubar_at_login);
     }
@@ -70,6 +90,14 @@ pub async fn preferences(home: &Path, mut args: Vec<String>) -> Result<()> {
         c.menubar_at_login,
         c.auto_update
     );
+    if c.quota_refresh_minutes == 0 {
+        println!("Usage refresh: on menu open only (no automatic refresh)");
+    } else {
+        println!(
+            "Usage refresh: every {} minutes (and on menu open)",
+            c.quota_refresh_minutes
+        );
+    }
     Ok(())
 }
 

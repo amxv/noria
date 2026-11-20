@@ -104,6 +104,8 @@ pub struct Snapshot {
     pub available: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub auth_invalid: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub complete: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub windows: Vec<Window>,
 }
@@ -114,6 +116,7 @@ impl Default for Snapshot {
             observed_at: zero_time(),
             available: false,
             auth_invalid: false,
+            complete: false,
             windows: vec![],
         }
     }

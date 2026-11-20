@@ -470,6 +470,41 @@ fn partial_and_unavailable_telemetry_preserve_independent_exhaustion() {
     assert!(s.acquire("codex", "", MODEL, &HashSet::new()).is_ok());
 }
 #[test]
+fn complete_available_read_retires_previously_reported_windows() {
+    let (s, c) = scheduler(&["a"]);
+    let t = now(&c);
+    let short = window("five_hour", 12.0, None, 300);
+    let week = window("seven_day", 25.0, None, 10080);
+    update(&s, "a", t, vec![short.clone(), week.clone()]);
+    advance(&c, Duration::seconds(1));
+    update(&s, "a", now(&c), vec![week.clone()]);
+    assert_eq!(
+        s.status().accounts[0]
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .windows
+            .len(),
+        2
+    );
+    advance(&c, Duration::seconds(1));
+    s.update(Snapshot {
+        account_id: "a".into(),
+        available: true,
+        complete: true,
+        observed_at: now(&c),
+        windows: vec![week.clone()],
+        ..Default::default()
+    })
+    .unwrap();
+    let state = &s.guard().state;
+    assert_eq!(state.snapshots["a"].windows, [week]);
+    let retired = window_key(&short);
+    assert!(!state.window_observed["a"].contains_key(&retired));
+    assert!(!state.learning["a"].contains_key(&retired));
+    assert!(!state.clocks["a"].contains_key(&retired));
+}
+#[test]
 fn allowed_overrides_rounding_but_not_explicit_exhaustion() {
     let (s, c) = scheduler(&["a"]);
     let t = now(&c);

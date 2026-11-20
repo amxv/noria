@@ -13,6 +13,7 @@ use crate::{
     model::{Account, Credential, Snapshot},
 };
 use anyhow::{Context, Result, bail};
+pub(crate) use claude::UsageRateLimit;
 pub use claude::parse_claude;
 pub use codex::parse_codex;
 pub use identity::Identity;
@@ -24,7 +25,8 @@ use std::{
 };
 
 pub struct Manager {
-    home: PathBuf,
+    pub(crate) home: PathBuf,
+    pub(crate) refresh_slots: tokio::sync::Semaphore,
     cache: Mutex<HashMap<PathBuf, (Snapshot, Instant)>>,
     codex_command: PathBuf,
     claude_command: PathBuf,
@@ -48,6 +50,7 @@ impl Manager {
             codex_command: resolve_native(&home, "codex"),
             claude_command: resolve_native(&home, "claude"),
             home,
+            refresh_slots: tokio::sync::Semaphore::new(4),
             cache: Mutex::new(HashMap::new()),
             claude_usage_url: "https://api.anthropic.com/api/oauth/usage".into(),
             claude_token_url: "https://platform.claude.com/v1/oauth/token".into(),
@@ -74,24 +77,6 @@ impl Manager {
         }
         Ok(p)
     }
-    async fn lock_profile(&self, p: &Path) -> Result<config::FileLock> {
-        // Never block a Tokio worker or hold a manager-wide lock during I/O.
-        // Short attempts also make cancellation release pending lock work promptly.
-        loop {
-            let p = p.to_path_buf();
-            let attempt = tokio::task::spawn_blocking(move || {
-                config::lock_timeout(p, "native", Duration::ZERO)
-            })
-            .await?;
-            match attempt {
-                Ok(g) => return Ok(g),
-                Err(e) if e.to_string().contains("is busy: deadline exceeded") => {
-                    tokio::time::sleep(Duration::from_millis(30)).await
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
     pub async fn credentials(&self, a: &Account) -> Result<Credential> {
         tokio::time::timeout(Duration::from_secs(30), async {
             let p = self.profile(a).await?;
@@ -99,7 +84,7 @@ impl Manager {
             if !expired {
                 return Ok(c);
             }
-            let _guard = self.lock_profile(&p).await?;
+            let _guard = config::lock_async(&p, "native").await?;
             let (c, expired) = self.read_credential(a, &p).await?;
             if !expired {
                 return Ok(c);
@@ -123,7 +108,7 @@ impl Manager {
         let started = Instant::now();
         tokio::time::timeout(Duration::from_secs(30), async {
             let p = self.profile(a).await?;
-            let _guard = self.lock_profile(&p).await?;
+            let _guard = config::lock_async(&p, "native").await?;
             {
                 let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some((cached, completed)) = cache.get(&p)

@@ -1,5 +1,7 @@
 mod cli;
 mod dialogs;
+#[cfg(target_os = "linux")]
+mod linux;
 mod menu;
 mod model;
 mod platform;
@@ -7,12 +9,14 @@ mod platform;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
+#[cfg(target_os = "linux")]
+use linux::LinuxTray as TrayIcon;
 use model::{Account, ClientRoot, Dashboard, HealthReport, UpdateResult};
 use notify::{RecursiveMode, Watcher};
 use platform::EventSender;
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -20,10 +24,9 @@ use std::{
 };
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
-use tray_icon::{
-    TrayIcon, TrayIconBuilder, TrayIconEvent,
-    menu::{MenuEvent, MenuId},
-};
+use tray_icon::menu::{MenuEvent, MenuId};
+#[cfg(windows)]
+use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -51,11 +54,10 @@ impl Action {
     }
 }
 
-#[derive(Clone, Copy)]
 enum Job {
     Status,
     Mutation,
-    Quota,
+    Quota(String),
     Login,
     Health,
     Update { automatic: bool, apply: bool },
@@ -81,16 +83,18 @@ struct App {
     dashboard: Option<Dashboard>,
     status_error: Option<String>,
     status_busy: bool,
+    status_pending: bool,
+    quota_pending: bool,
     mutation_busy: bool,
-    quota_busy: bool,
-    quota_error: bool,
+    refreshing: HashSet<String>,
+    failed: HashSet<String>,
     update_busy: bool,
     health_busy: bool,
     dialog_busy: bool,
     login: Option<CancellationToken>,
     shutdown: CancellationToken,
     next_status: Instant,
-    next_quota: Instant,
+    next_quota: Option<Instant>,
     next_update: Instant,
 }
 
@@ -116,24 +120,31 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let (menu, actions) = menu::build(self)?;
         self.actions = actions;
-        self.tray.set_menu(Some(Box::new(menu)));
         let running = self
             .dashboard
             .as_ref()
             .is_some_and(|dashboard| dashboard.running);
-        self.tray.set_icon(Some(menu::icon(running)))?;
-        self.tray.set_tooltip(Some(if self.dashboard.is_none() {
+        let tooltip = if self.dashboard.is_none() {
             "Noria · loading"
         } else if running {
             "Noria · running"
         } else {
             "Noria · stopped"
-        }))?;
+        };
+        #[cfg(target_os = "linux")]
+        self.tray.render(menu, running, tooltip);
+        #[cfg(windows)]
+        {
+            self.tray.set_menu(Some(Box::new(menu)));
+            self.tray.set_icon(Some(menu::icon(running)))?;
+            self.tray.set_tooltip(Some(tooltip))?;
+        }
         Ok(())
     }
 
     fn load_status(&mut self) {
         if self.status_busy {
+            self.status_pending = true;
             return;
         }
         self.status_busy = true;
@@ -141,14 +152,33 @@ impl App {
         self.run(Job::Status, ["status", "--json"], 8);
     }
 
+    fn arm_quota_timer(&mut self, minutes: u16) {
+        self.next_quota =
+            (minutes > 0).then(|| Instant::now() + Duration::from_secs(u64::from(minutes) * 60));
+    }
+
     fn refresh_quota(&mut self) {
-        if self.quota_busy {
+        let Some(dashboard) = self.dashboard.as_ref() else {
+            self.quota_pending = true;
+            self.load_status();
             return;
+        };
+        if self.refreshing.is_empty() {
+            self.failed.clear();
         }
-        self.quota_busy = true;
-        self.quota_error = false;
-        self.next_quota = Instant::now() + Duration::from_secs(300);
-        self.run(Job::Quota, ["quota", "refresh"], 125);
+        let minutes = dashboard.preferences.quota_refresh_minutes;
+        for account in &dashboard.accounts {
+            if (account.enabled || !account.email.is_empty())
+                && self.refreshing.insert(account.id.clone())
+            {
+                self.run(
+                    Job::Quota(account.id.clone()),
+                    ["quota", "refresh", &account.id],
+                    60,
+                );
+            }
+        }
+        self.arm_quota_timer(minutes);
     }
 
     fn check_update(&mut self, automatic: bool, apply: bool) {
@@ -253,12 +283,26 @@ impl App {
                             self.run(Job::Reopen, ["tray", "reopen"], 5);
                         }
                         self.status_error = None;
+                        if self
+                            .dashboard
+                            .as_ref()
+                            .map(|d| d.preferences.quota_refresh_minutes)
+                            != Some(dashboard.preferences.quota_refresh_minutes)
+                        {
+                            self.arm_quota_timer(dashboard.preferences.quota_refresh_minutes);
+                        }
                         self.dashboard = Some(dashboard);
+                        if std::mem::take(&mut self.quota_pending) {
+                            self.refresh_quota();
+                        }
                     }
                     Err(_) => {
                         self.status_error =
                             Some("Status unavailable · Refresh Status or Health Check".into())
                     }
+                }
+                if std::mem::take(&mut self.status_pending) {
+                    self.load_status();
                 }
             }
             Job::Mutation => {
@@ -268,9 +312,13 @@ impl App {
                 }
                 self.load_status();
             }
-            Job::Quota => {
-                self.quota_busy = false;
-                self.quota_error = result.is_err();
+            Job::Quota(id) => {
+                self.refreshing.remove(&id);
+                if result.is_err() {
+                    self.failed.insert(id);
+                } else {
+                    self.failed.remove(&id);
+                }
                 self.load_status();
             }
             Job::Login => {
@@ -278,8 +326,8 @@ impl App {
                 if !canceled && let Err(error) = result {
                     self.notice("Sign-in did not complete", error);
                 }
+                self.quota_pending = true;
                 self.load_status();
-                self.refresh_quota();
             }
             Job::Health => {
                 self.health_busy = false;
@@ -347,7 +395,10 @@ impl App {
                     return Ok(false);
                 }
             }
-            Event::Refresh => self.load_status(),
+            Event::Refresh => {
+                self.load_status();
+                self.refresh_quota();
+            }
             Event::Control => {
                 if take_quit_request(&self.cli.home) {
                     return Ok(false);
@@ -376,7 +427,7 @@ impl App {
         if now >= self.next_status {
             self.load_status();
         }
-        if now >= self.next_quota {
+        if self.next_quota.is_some_and(|next| now >= next) && self.refreshing.is_empty() {
             self.refresh_quota();
         }
         if now >= self.next_update {
@@ -487,18 +538,21 @@ pub fn main() -> Result<()> {
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         callback.send(Event::Menu(event.id))
     }));
-    let callback = sender.clone();
-    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-        if matches!(
-            event,
-            TrayIconEvent::Click {
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } | TrayIconEvent::DoubleClick { .. }
-        ) {
-            callback.send(Event::Refresh);
-        }
-    }));
+    #[cfg(windows)]
+    {
+        let callback = sender.clone();
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick { .. }
+            ) {
+                callback.send(Event::Refresh);
+            }
+        }));
+    }
     let callback = sender.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         if result.is_ok_and(|event| {
@@ -524,6 +578,9 @@ pub fn main() -> Result<()> {
     // Direct launches (including a Windows double-click) need the same private
     // initialization as `noria tray open`. Keep settings ownership in the CLI.
     runtime.block_on(cli.run(&["init".into()], 15, CancellationToken::new()))?;
+    #[cfg(target_os = "linux")]
+    let tray = linux::LinuxTray::new(sender.clone())?;
+    #[cfg(windows)]
     let tray = TrayIconBuilder::new()
         .with_tooltip("Noria · loading")
         .with_icon(menu::icon(false))
@@ -539,16 +596,18 @@ pub fn main() -> Result<()> {
         dashboard: None,
         status_error: None,
         status_busy: false,
+        status_pending: false,
+        quota_pending: false,
         mutation_busy: false,
-        quota_busy: false,
-        quota_error: false,
+        refreshing: HashSet::new(),
+        failed: HashSet::new(),
         update_busy: false,
         health_busy: false,
         dialog_busy: false,
         login: None,
         shutdown: CancellationToken::new(),
         next_status: now,
-        next_quota: now + Duration::from_secs(300),
+        next_quota: None,
         next_update: now + Duration::from_secs(30),
     };
     app.render()?;

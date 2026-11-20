@@ -133,6 +133,51 @@ fn swift_dashboard_schema_and_nanosecond_windows_read_go_state() {
     );
 }
 #[test]
+fn refresh_preferences_round_trip_from_legacy_config() {
+    let f = Fixture::new();
+    f.init();
+    let file = f.home.join("config.json");
+    let mut legacy: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("quota_refresh_minutes");
+    fs::write(&file, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    assert_eq!(
+        f.json(&["preferences", "--json"])["quota_refresh_minutes"],
+        0
+    );
+    for minutes in noria::config::QUOTA_REFRESH_INTERVALS {
+        let value = f.json(&[
+            "preferences",
+            "quota-refresh-minutes",
+            &minutes.to_string(),
+            "--json",
+        ]);
+        assert_eq!(value["quota_refresh_minutes"], minutes);
+    }
+    let before = fs::read(&file).unwrap();
+    for value in ["3", "-1", "on", "999999999999"] {
+        assert!(
+            !f.command()
+                .args(["preferences", "quota-refresh-minutes", value])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(fs::read(&file).unwrap(), before);
+    }
+    assert_eq!(
+        f.json(&["status", "--json"])["preferences"]["quota_refresh_minutes"],
+        180
+    );
+    assert_eq!(
+        f.json(&["preferences", "quota-refresh-minutes", "on-open", "--json"])["quota_refresh_minutes"],
+        0
+    );
+}
+
+#[test]
 fn account_aliases_do_not_change_ids_and_ambiguous_email_is_rejected() {
     let f = Fixture::new();
     f.init();

@@ -40,34 +40,47 @@ impl Manager {
         process
             .write(&json!({"method":"initialized","params":{}}))
             .await?;
-        let account = rpc(
-            &mut process,
-            2,
-            "account/read",
-            json!({"refreshToken":refresh_token}),
-        )
-        .await?;
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Auth {
-            #[serde(default)]
-            account: Value,
-            #[serde(default)]
-            requires_openai_auth: bool,
+        let invalid = || Snapshot {
+            account_id: a.id.clone(),
+            observed_at: started,
+            auth_invalid: true,
+            ..Snapshot::default()
+        };
+        if refresh_token && signed_out(&mut process, true).await? {
+            return Ok(invalid());
         }
-        let auth: Auth = serde_json::from_value(account)
-            .map_err(|_| anyhow::anyhow!("invalid Codex account response"))?;
-        if auth.requires_openai_auth && auth.account.is_null() {
-            return Ok(Snapshot {
-                account_id: a.id.clone(),
-                observed_at: started,
-                auth_invalid: true,
-                ..Snapshot::default()
-            });
-        }
-        let raw = rpc(&mut process, 3, "account/rateLimits/read", json!({})).await?;
+        let raw = match rpc(&mut process, 3, "account/rateLimits/read", json!({})).await {
+            Ok(raw) => raw,
+            Err(error) => {
+                if !refresh_token && signed_out(&mut process, false).await.unwrap_or(false) {
+                    return Ok(invalid());
+                }
+                return Err(error);
+            }
+        };
         parse_codex(&a.id, &serde_json::to_vec(&raw)?, started)
     }
+}
+
+async fn signed_out(process: &mut NativeProcess, refresh_token: bool) -> Result<bool> {
+    let account = rpc(
+        process,
+        2,
+        "account/read",
+        json!({"refreshToken":refresh_token}),
+    )
+    .await?;
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Auth {
+        #[serde(default)]
+        account: Value,
+        #[serde(default)]
+        requires_openai_auth: bool,
+    }
+    let auth: Auth = serde_json::from_value(account)
+        .map_err(|_| anyhow::anyhow!("invalid Codex account response"))?;
+    Ok(auth.requires_openai_auth && auth.account.is_null())
 }
 async fn rpc(process: &mut NativeProcess, id: u32, method: &str, params: Value) -> Result<Value> {
     process

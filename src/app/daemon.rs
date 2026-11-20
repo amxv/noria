@@ -1,5 +1,6 @@
+use super::refresh::{RefreshResult, Refresher};
 use super::*;
-use crate::{core::Scheduler, model::Account, provider::Manager, proxy::Server};
+use crate::{core::Scheduler, provider::Manager, proxy::Server};
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
@@ -8,97 +9,35 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
-use futures_util::{StreamExt, stream};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder,
     service::TowerToHyperService,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{process::Stdio, sync::Arc};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RefreshResult {
-    pub account: String,
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub error: String,
-}
-struct Refresher {
+struct LiveRefresh {
     home: PathBuf,
     scheduler: Arc<Scheduler>,
     provider: Arc<Manager>,
-    lock: tokio::sync::Mutex<()>,
 }
-impl Refresher {
+impl LiveRefresh {
     async fn refresh(&self, id: &str) -> Result<Vec<RefreshResult>> {
-        let _guard = self.lock.lock().await;
-        let c = config::load(&self.home)?;
-        if !id.is_empty() {
-            accounts::find(&c, id)?;
+        Refresher {
+            home: &self.home,
+            scheduler: Some(&self.scheduler),
+            provider: &self.provider,
         }
-        self.scheduler.set_accounts(c.accounts.clone())?;
-        let accounts: Vec<Account> = c
-            .accounts
-            .into_iter()
-            .filter(|a| {
-                if !id.is_empty() {
-                    a.id == id
-                } else {
-                    a.enabled || a.authenticated
-                }
-            })
-            .collect();
-        let results = stream::iter(accounts.into_iter().map(|a| async move {
-            let outcome = tokio::time::timeout(Duration::from_secs(25), async {
-                if a.email.is_empty()
-                    && let Ok(identity) = self.provider.identity(&a).await
-                    && identity.authenticated
-                    && !identity.email.is_empty()
-                {
-                    let _ = config::mutate(&self.home, |c| {
-                        if let Some(v) = c.accounts.iter_mut().find(|v| v.id == a.id) {
-                            v.email = identity.email;
-                            v.authenticated = true;
-                        }
-                        Ok(())
-                    });
-                }
-                self.scheduler.update(self.provider.refresh(&a).await?)
-            })
-            .await;
-            match outcome {
-                Ok(Ok(())) => RefreshResult {
-                    account: a.id,
-                    ok: true,
-                    error: String::new(),
-                },
-                Ok(Err(error)) => RefreshResult {
-                    account: a.id,
-                    ok: false,
-                    error: error.to_string(),
-                },
-                Err(_) => RefreshResult {
-                    account: a.id,
-                    ok: false,
-                    error: "refresh timed out".into(),
-                },
-            }
-        }))
-        .buffered(4)
-        .collect()
-        .await;
-        if let Ok(c) = config::load(&self.home) {
-            self.scheduler.set_accounts(c.accounts)?;
-        }
-        Ok(results)
+        .refresh(id)
+        .await
     }
 }
 #[derive(Clone)]
 struct Control {
     gateway: Arc<Server>,
-    refresher: Arc<Refresher>,
+    refresher: Arc<LiveRefresh>,
     cancel: CancellationToken,
 }
 async fn control_handler(State(state): State<Control>, request: Request<Body>) -> Response {
@@ -171,11 +110,10 @@ pub async fn serve(home: &Path) -> Result<()> {
         provider.clone(),
         config::secret(home)?,
     ));
-    let refresher = Arc::new(Refresher {
+    let refresher = Arc::new(LiveRefresh {
         home: home.to_owned(),
         scheduler,
         provider,
-        lock: tokio::sync::Mutex::new(()),
     });
     let cancel = CancellationToken::new();
     let state = Control {
@@ -310,16 +248,15 @@ pub(super) async fn refresh_account(home: &Path, id: &str) -> Result<Vec<Refresh
     {
         return Ok(serde_json::from_value(value)?);
     }
-    let _guard =
-        config::lock(home, "daemon").context("live refresh failed and scheduler is locked")?;
-    let c = config::load(home)?;
-    let refresher = Refresher {
-        home: home.to_owned(),
-        scheduler: Arc::new(Scheduler::new(home.join("scheduler.json"), c.accounts)?),
-        provider: Arc::new(Manager::new(home)),
-        lock: tokio::sync::Mutex::new(()),
-    };
-    refresher.refresh(id).await
+    // Refuse the offline path if a live daemon owns the scheduler.
+    drop(config::lock(home, "daemon").context("live refresh failed and scheduler is locked")?);
+    Refresher {
+        home,
+        scheduler: None,
+        provider: &Manager::new(home),
+    }
+    .refresh(id)
+    .await
 }
 pub async fn quota(home: &Path, args: Vec<String>) -> Result<()> {
     if args.is_empty() || help_requested(&args) {

@@ -79,8 +79,12 @@ def build(output: Path, expected_os=None, expected_arch=None):
             run("codesign", "--verify", "--deep", "--strict", str(stage / "Noria.app"))
             app = stage / "Noria.app/Contents/MacOS/noria-menubar"
             run(str(app), "--check")
-            for flag, fixture in (("--validate-status-json", "status.json"), ("--validate-compact-status-json", "compact-status.json")):
+            for flag, fixture in (("--validate-status-json", "status.json"), ("--validate-compact-status-json", "compact-status.json"), ("--validate-fable-status-json", "fable-status.json")):
                 run(str(app), flag, str(ROOT / "apps/menubar/Tests" / fixture))
+            run(str(app), "--validate-quota-freshness")
+            run(str(app), "--validate-quota-levels")
+            fixtures = ROOT / "apps/menubar/Tests"
+            run(str(app), "--validate-refresh-settings", str(fixtures / "fable-status.json"), str(fixtures / "compact-status.json"))
         else:
             tray = binaries / ("noria-tray" + suffix)
             run(str(tray), "--check")

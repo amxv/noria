@@ -14,6 +14,16 @@ use std::{
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:43119";
 
+pub const QUOTA_REFRESH_INTERVALS: [u16; 9] = [0, 2, 5, 10, 15, 30, 60, 120, 180];
+
+pub fn validate_quota_refresh(minutes: u16) -> Result<()> {
+    anyhow::ensure!(
+        QUOTA_REFRESH_INTERVALS.contains(&minutes),
+        "quota refresh interval must be on-open, 0, 2, 5, 10, 15, 30, 60, 120, or 180"
+    );
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
@@ -22,6 +32,8 @@ pub struct Config {
     pub start_at_login: bool,
     pub menubar_at_login: bool,
     pub auto_update: bool,
+    #[serde(default)]
+    pub quota_refresh_minutes: u16,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tool_path: String,
 }
@@ -33,6 +45,7 @@ impl Default for Config {
             start_at_login: false,
             menubar_at_login: false,
             auto_update: true,
+            quota_refresh_minutes: 0,
             tool_path: String::new(),
         }
     }
@@ -43,6 +56,8 @@ pub struct Preferences {
     pub launch_menubar_at_login: bool,
     pub start_at_login: bool,
     pub auto_update: bool,
+    #[serde(default)]
+    pub quota_refresh_minutes: u16,
 }
 
 pub fn home() -> Result<PathBuf> {
@@ -191,6 +206,7 @@ pub fn load(home: impl AsRef<Path>) -> Result<Config> {
         fs::read(home.join("config.json")).context("read configuration (run noria init)")?;
     let c: Config = serde_json::from_slice(&bytes).context("invalid configuration")?;
     validate_listen(&c.listen)?;
+    validate_quota_refresh(c.quota_refresh_minutes)?;
     let mut ids = HashSet::new();
     for a in &c.accounts {
         validate_id(&a.id)?;
@@ -299,6 +315,24 @@ pub fn lock_timeout(home: impl AsRef<Path>, name: &str, timeout: Duration) -> Re
     }
 }
 
+pub(crate) async fn lock_async(p: &Path, name: &str) -> Result<FileLock> {
+    // Never block a Tokio worker or hold a manager-wide lock during I/O.
+    // Short attempts also make cancellation release pending lock work promptly.
+    loop {
+        let p = p.to_path_buf();
+        let name = name.to_owned();
+        let attempt =
+            tokio::task::spawn_blocking(move || lock_timeout(p, &name, Duration::ZERO)).await?;
+        match attempt {
+            Ok(g) => return Ok(g),
+            Err(e) if e.to_string().contains("is busy: deadline exceeded") => {
+                tokio::time::sleep(Duration::from_millis(30)).await
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 pub fn mutate<F>(home: impl AsRef<Path>, f: F) -> Result<()>
 where
     F: FnOnce(&mut Config) -> Result<()>,
@@ -321,13 +355,16 @@ pub fn read_preferences(home: impl AsRef<Path>) -> Result<Preferences> {
         launch_menubar_at_login: c.menubar_at_login,
         start_at_login: c.start_at_login,
         auto_update: c.auto_update,
+        quota_refresh_minutes: c.quota_refresh_minutes,
     })
 }
 pub fn save_preferences(home: impl AsRef<Path>, p: Preferences) -> Result<()> {
     mutate(home, |c| {
         c.menubar_at_login = p.launch_menubar_at_login;
         c.start_at_login = p.start_at_login;
+        validate_quota_refresh(p.quota_refresh_minutes)?;
         c.auto_update = p.auto_update;
+        c.quota_refresh_minutes = p.quota_refresh_minutes;
         Ok(())
     })
 }

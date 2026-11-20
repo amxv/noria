@@ -7,26 +7,71 @@ use crate::{
     core::NANOS_PER_MINUTE,
     model::{Account, Snapshot, Window},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::path::Path;
 
+#[derive(Debug, thiserror::Error)]
+#[error("Claude usage OAuth authorization rejected")]
+struct Unauthorized;
+
+#[derive(Debug, thiserror::Error)]
+#[error("Claude is rate limiting usage checks; retrying at {until}")]
+pub(crate) struct UsageRateLimit {
+    pub until: DateTime<Utc>,
+}
+
+fn retry_at(value: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+    let seconds = value
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .or_else(|| {
+            httpdate::parse_http_date(value.trim())
+                .ok()
+                .map(|at| (DateTime::<Utc>::from(at) - now).num_seconds())
+        })
+        .unwrap_or(300);
+    now + chrono::Duration::seconds(seconds.clamp(30, 3600))
+}
+
 impl Manager {
     pub(super) async fn claude_quota(&self, a: &Account, p: &Path) -> Result<Snapshot> {
         let started = Utc::now();
-        let snapshot = self.claude_control_usage(a, p, started).await?;
-        if !snapshot.windows.is_empty() {
-            return Ok(snapshot);
-        }
-        let Ok((credential, expired)) = self.read_credential(a, p).await else {
-            return Ok(snapshot);
+        let Ok((mut credential, expired)) = self.read_credential(a, p).await else {
+            return self.claude_control_usage(a, p, started).await;
         };
         if expired {
-            bail!("Claude OAuth credential expired; sign in again");
+            credential = self.rotate_usage_credential(a, p).await?;
         }
-        self.claude_oauth_usage(&a.id, &credential.token, started)
+        let result = self
+            .claude_oauth_usage(&a.id, &credential.token, started)
+            .await;
+        if matches!(&result, Err(error) if error.is::<Unauthorized>()) {
+            let credential = self.rotate_usage_credential(a, p).await?;
+            return self
+                .claude_oauth_usage(&a.id, &credential.token, Utc::now())
+                .await;
+        }
+        result
+    }
+
+    async fn rotate_usage_credential(
+        &self,
+        a: &Account,
+        p: &Path,
+    ) -> Result<crate::model::Credential> {
+        self.refresh_claude_oauth(a, p)
             .await
+            .context("Claude usage credential refresh failed; sign in again")?;
+        let (credential, expired) = self.read_credential(a, p).await?;
+        anyhow::ensure!(
+            !expired,
+            "Claude OAuth credential refresh was not persisted; sign in again"
+        );
+        Ok(credential)
     }
     async fn claude_control_usage(
         &self,
@@ -114,7 +159,18 @@ impl Manager {
             if status == reqwest::StatusCode::UNAUTHORIZED
                 || status == reqwest::StatusCode::FORBIDDEN
             {
-                bail!("Claude subscription usage authorization failed; sign in again");
+                return Err(Unauthorized.into());
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let value = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                return Err(UsageRateLimit {
+                    until: retry_at(value, Utc::now()),
+                }
+                .into());
             }
             bail!(
                 "Claude subscription usage returned HTTP {}",
@@ -181,51 +237,97 @@ pub fn parse_claude(id: &str, data: &[u8], now: DateTime<Utc>) -> Result<Snapsho
         if raw.is_null() {
             continue;
         }
-        let fields = raw
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("Claude usage window schema changed"))?;
-        let used = fields
-            .get("utilization")
-            .ok_or_else(|| anyhow::anyhow!("Claude usage window fields missing"))?;
-        let reset = fields
-            .get("resets_at")
-            .ok_or_else(|| anyhow::anyhow!("Claude usage window fields missing"))?;
-        let used: Option<f64> = serde_json::from_value(used.clone())
-            .map_err(|_| anyhow::anyhow!("invalid Claude usage window"))?;
-        let reset: Option<String> = serde_json::from_value(reset.clone())
-            .map_err(|_| anyhow::anyhow!("invalid Claude usage window"))?;
-        if used.is_some_and(|v| !v.is_finite() || !(0.0..=100.0).contains(&v)) {
-            bail!("Claude utilization outside 0..100");
+        let window = parse_window(key, raw, "utilization")?;
+        snapshot.windows.push(window);
+    }
+    for item in array_field(limits.get("model_scoped"))? {
+        if is_fable(&item["display_name"]) {
+            put_window(
+                &mut snapshot,
+                parse_window("seven_day_fable", item, "utilization")?,
+            );
         }
-        let duration = if key.starts_with("five_hour") {
-            300 * NANOS_PER_MINUTE
-        } else {
-            10080 * NANOS_PER_MINUTE
+    }
+    for item in array_field(limits.get("limits"))? {
+        let group = item["group"].as_str().unwrap_or_default();
+        let name = match item["kind"].as_str() {
+            Some("session") if group.is_empty() || group == "session" => "five_hour",
+            Some("weekly_all") if group.is_empty() || group == "weekly" => "seven_day",
+            Some("weekly_scoped")
+                if (group.is_empty() || group == "weekly")
+                    && is_fable(&item["scope"]["model"]["display_name"]) =>
+            {
+                "seven_day_fable"
+            }
+            _ => continue,
         };
-        let model = key
-            .strip_prefix("seven_day_")
-            .or_else(|| key.strip_prefix("five_hour_"))
-            .unwrap_or_default()
-            .to_owned();
-        let resets_at = reset
-            .map(|s| {
-                DateTime::parse_from_rfc3339(&s)
-                    .map(|t| t.with_timezone(&Utc))
-                    .map_err(|_| {
-                        anyhow::anyhow!("Claude usage reset must be timezone-aware ISO timestamp")
-                    })
-            })
-            .transpose()?;
-        snapshot.windows.push(Window {
-            name: key.clone(),
-            limit_id: key.clone(),
-            model,
-            used,
-            duration,
-            resets_at,
-            ..Window::default()
-        });
+        put_window(&mut snapshot, parse_window(name, item, "percent")?);
     }
     snapshot.available = true;
+    snapshot.complete = true;
     Ok(snapshot)
+}
+
+fn array_field(value: Option<&Value>) -> Result<&[Value]> {
+    match value {
+        None | Some(Value::Null) => Ok(&[]),
+        Some(Value::Array(items)) => Ok(items),
+        _ => bail!("invalid Claude scoped limits"),
+    }
+}
+
+fn is_fable(name: &Value) -> bool {
+    let name = name
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let name = name.strip_prefix("claude ").unwrap_or(&name);
+    name == "fable" || name.starts_with("fable ")
+}
+
+fn put_window(snapshot: &mut Snapshot, window: Window) {
+    if let Some(existing) = snapshot
+        .windows
+        .iter_mut()
+        .find(|w| w.name == window.name && w.model == window.model)
+    {
+        *existing = window;
+    } else {
+        snapshot.windows.push(window);
+    }
+}
+
+fn parse_window(name: &str, item: &Value, percent: &str) -> Result<Window> {
+    let used = item
+        .get(percent)
+        .context("Claude usage window fields missing")?;
+    let reset = item
+        .get("resets_at")
+        .context("Claude usage window fields missing")?;
+    let used: Option<f64> =
+        serde_json::from_value(used.clone()).context("invalid Claude usage window")?;
+    anyhow::ensure!(
+        used.is_none_or(|v| (0.0..=100.0).contains(&v)),
+        "Claude utilization outside 0..100"
+    );
+    let resets_at: Option<DateTime<Utc>> = serde_json::from_value(reset.clone())
+        .map_err(|_| anyhow::anyhow!("Claude usage reset must be timezone-aware ISO timestamp"))?;
+    Ok(Window {
+        name: name.into(),
+        limit_id: name.into(),
+        model: name
+            .strip_prefix("seven_day_")
+            .or_else(|| name.strip_prefix("five_hour_"))
+            .unwrap_or_default()
+            .into(),
+        duration: if name.starts_with("five_hour") {
+            300
+        } else {
+            10080
+        } * NANOS_PER_MINUTE,
+        used,
+        resets_at,
+        ..Window::default()
+    })
 }

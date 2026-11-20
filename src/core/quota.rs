@@ -113,7 +113,15 @@ impl Scheduler {
         }
         if let Some(old) = &old_snapshot {
             for w in &old.windows {
-                if !present.contains(&window_key(w)) {
+                let key = window_key(w);
+                if present.contains(&key) {
+                    continue;
+                }
+                if snapshot.complete && snapshot.available {
+                    learned.remove(&key);
+                    observed.remove(&key);
+                    clocks.remove(&key);
+                } else {
                     snapshot.windows.push(w.clone());
                 }
             }

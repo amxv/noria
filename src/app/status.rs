@@ -18,9 +18,17 @@ pub(super) async fn dashboard(home: &Path) -> Result<Value> {
     value["address"] = json!(daemon_address(home, &c.listen));
     value["integrations"] = serde_json::to_value(integration::views(home)?)?;
     value["client_roots"] = json!(client::native_roots());
-    value["preferences"] = json!({"start_at_login":c.start_at_login,"menubar_at_login":c.menubar_at_login,"auto_update":c.auto_update});
+    value["preferences"] = json!({"start_at_login":c.start_at_login,"menubar_at_login":c.menubar_at_login,"auto_update":c.auto_update,"quota_refresh_minutes":c.quota_refresh_minutes});
     if !cfg!(target_os = "macos") {
         value["preferences"]["tray_at_login"] = json!(c.menubar_at_login);
+    }
+    let refreshes = refresh::read_status(home);
+    if let Some(accounts) = value["accounts"].as_array_mut() {
+        for account in accounts {
+            if let Some(status) = account["id"].as_str().and_then(|id| refreshes.get(id)) {
+                account["last_refresh"] = serde_json::to_value(status)?;
+            }
+        }
     }
     value["observed_at"] = json!(Utc::now());
     Ok(value)
@@ -189,8 +197,37 @@ pub async fn health(home: &Path, mut args: Vec<String>) -> Result<()> {
     let as_json = flag(&mut args, "--json");
     no_args(&args, "noria health [--json]")?;
     let c = config::load(home)?;
-    let mut checks =
-        vec![json!({"name":"Local router","ok":running(home).await,"detail":c.listen})];
+    let running = running(home).await;
+    let wanted = service::read_intent(home).wanted;
+    let detail = if running {
+        c.listen.clone()
+    } else if wanted {
+        format!("Expected to be running, but is unreachable at {}", c.listen)
+    } else {
+        "Stopped by choice (quota refresh works while stopped)".into()
+    };
+    let mut checks = vec![json!({"name":"Local router","ok":running || !wanted,"detail":detail})];
+    let refreshes = refresh::read_status(home);
+    for a in c.accounts.iter().filter(|a| a.enabled) {
+        let (ok, detail) = match refreshes.get(&a.id) {
+            None => (false, "No quota refresh recorded; use Refresh Usage".into()),
+            Some(last) if !last.ok => (false, format!("Last refresh failed: {}", last.error)),
+            Some(last) if Utc::now() - last.attempted_at <= chrono::Duration::minutes(3) => (
+                true,
+                format!(
+                    "Usage refreshed {}",
+                    last.attempted_at
+                        .with_timezone(&chrono::Local)
+                        .format("%-I:%M %p")
+                ),
+            ),
+            Some(_) => (
+                false,
+                "Quota snapshot is stale; refresh usage to get current values".into(),
+            ),
+        };
+        checks.push(json!({"name":format!("{} quota · {}", a.provider, a.display_name()), "ok":ok, "detail":detail}));
+    }
     for v in integration::views(home)? {
         checks
             .push(json!({"name":format!("{} settings",v.provider),"ok":v.healthy,"detail":v.path}));

@@ -40,6 +40,13 @@ pub trait Backend: Send + Sync + 'static {
     fn credentials<'a>(&'a self, account: &'a Account)
     -> BoxFuture<'a, anyhow::Result<Credential>>;
     fn refresh<'a>(&'a self, account: &'a Account) -> BoxFuture<'a, anyhow::Result<Snapshot>>;
+    fn refresh_after_rejection<'a>(
+        &'a self,
+        account: &'a Account,
+        scheduler: &'a Scheduler,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move { scheduler.update(self.refresh(account).await?) })
+    }
 }
 impl Backend for Manager {
     fn credentials<'a>(
@@ -50,6 +57,22 @@ impl Backend for Manager {
     }
     fn refresh<'a>(&'a self, account: &'a Account) -> BoxFuture<'a, anyhow::Result<Snapshot>> {
         Box::pin(Manager::refresh(self, account))
+    }
+    fn refresh_after_rejection<'a>(
+        &'a self,
+        account: &'a Account,
+        scheduler: &'a Scheduler,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            crate::app::refresh::Refresher {
+                home: &self.home,
+                provider: self,
+                scheduler: Some(scheduler),
+            }
+            .read_account(account, true)
+            .await?;
+            Ok(())
+        })
     }
 }
 #[derive(Default)]
@@ -193,9 +216,7 @@ impl Server {
         self.workers.spawn(async move {
             tokio::select! {
                 _ = server.cancel.cancelled() => {},
-                result = tokio::time::timeout(Duration::from_secs(25),server.backend.refresh(&account)) => {
-                    if let Ok(Ok(snapshot)) = result { let _ = server.scheduler.update(snapshot); }
-                }
+                _ = tokio::time::timeout(Duration::from_secs(25),server.backend.refresh_after_rejection(&account, &server.scheduler)) => {}
             }
             server.lifecycle.lock().unwrap().refreshing.remove(&account.id);
         });
