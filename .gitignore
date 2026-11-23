@@ -22,3 +22,5 @@
 /tmp/
 /.vercel/
 /.noria/
+
+.agents/gg/queue.md
