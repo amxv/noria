@@ -9,7 +9,7 @@
         "@types/node": "^24.0.13",
         "astro": "^7.2.10",
         "typescript": "^6.0.3",
-        "zuedocs": "0.1.30",
+        "zuedocs": "0.1.31",
       },
     },
   },
@@ -966,7 +966,7 @@
 
     "zod": ["zod@4.5.4", "", {}, "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="],
 
-    "zuedocs": ["zuedocs@0.1.30", "", { "dependencies": { "@pagefind/component-ui": "^1.5.2", "@resvg/resvg-js": "^2.6.2", "mermaid": "^11.16.0", "pagefind": "^1.5.2" }, "bin": { "zuedocs": "bin/zuedocs.js", "create-zuedocs": "bin/zuedocs.js" } }, "sha512-u8/EN70NZDevSbsavWXW3z3XxxouDE2Gx+FN2XF/zjdMKrEeDmP45z1+f7jkeW/82yCyLj0BRhsgLESTLClleg=="],
+    "zuedocs": ["zuedocs@0.1.31", "", { "dependencies": { "@pagefind/component-ui": "^1.5.2", "@resvg/resvg-js": "^2.6.2", "mermaid": "^11.16.0", "pagefind": "^1.5.2" }, "bin": { "zuedocs": "bin/zuedocs.js", "create-zuedocs": "bin/zuedocs.js" } }, "sha512-OPKB7Ghgx/LXwENIxOonE1T8NmrBeb9iYg2KC4cC3IgbufV35FlAkzEUKMxVacKy+c8Z/4Po21gkpywnunyk8w=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
 
