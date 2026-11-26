@@ -17,6 +17,6 @@
     "@types/node": "^24.0.13",
     "astro": "^7.2.10",
     "typescript": "^6.0.3",
-    "zuedocs": "0.1.26"
+    "zuedocs": "0.1.30"
   }
 }
