@@ -1,0 +1,32 @@
+{
+  "objc2-core-services@0.3.2": {
+    "file": "objc2-7b1abfd750a2.txt",
+    "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "license_text": "MIT.txt",
+    "license_text_url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt"
+  },
+  "objc2-core-foundation@0.3.2": {
+    "file": "objc2-7b1abfd750a2.txt",
+    "url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "license_text": "MIT.txt",
+    "license_text_url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt"
+  },
+  "objc2@0.6.5": {
+    "file": "objc2-d7d2fa23ceaa.txt",
+    "url": "https://raw.githubusercontent.com/madsmtm/objc2/d7d2fa23ceaa5e6096c923b081040e5d81b3b9df/LICENSE.md",
+    "license_text": "MIT.txt",
+    "license_text_url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt"
+  },
+  "objc2-encode@4.1.0": {
+    "file": "objc2-8d214f547736.txt",
+    "url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+    "license_text": "MIT.txt",
+    "license_text_url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt"
+  },
+  "dispatch2@0.3.1": {
+    "file": "objc2-8852b424193c.txt",
+    "url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+    "license_text": "MIT.txt",
+    "license_text_url": "https://raw.githubusercontent.com/spdx/license-list-data/v3.26.0/text/MIT.txt"
+  }
+}

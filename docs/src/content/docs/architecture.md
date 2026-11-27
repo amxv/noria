@@ -98,7 +98,7 @@ Telemetry isn't always perfect. Noria uses recent provider usage readings, but a
 
 ## 5. Why routing stays local
 
-The background Go service owns the account pool, session bindings, quota observations, and scheduling decisions. Each authorized account has a separate native sign-in profile. The macOS menu bar simply displays CLI state and provides controls.
+The background Rust service owns the account pool, session bindings, quota observations, and scheduling decisions. Each authorized account has a separate native sign-in profile. The Swift macOS menu bar and Rust Windows/Linux tray display CLI state and provide controls.
 
 The proxy runs on loopback (`localhost`). The model request still goes to OpenAI or Anthropic using the chosen account. Noria is **not a cloud relay, a model host, or a way to bypass a provider's actual usage caps**.
 
